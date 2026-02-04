@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Караванная карта</title>
+    <style>
+        /* ОБЩИЙ СТИЛЬ ДЛЯ ВСЕХ ПАНЕЛЕЙ */
+        .ui-panel {
+            background: rgba(0, 0, 0, 0.85);
+            border: 2px solid #4a6fa5;
+            border-radius: 10px;
+            color: white;
+            backdrop-filter: blur(5px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            font-family: 'Arial', sans-serif;
+            z-index: 1000;
+        }
+
+        /* ОБЩИЙ СТИЛЬ ДЛЯ КНОПОК */
+        button {
+            background: #4a6fa5;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.1s;
+            font-family: 'Arial', sans-serif;
+        }
+
+        button:hover {
+            background: #5a8fdf;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        /* Позиционирование кнопки Режима Мастера */
+        #editor-toggle-container {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 350px;
+            z-index: 1001;
+        }
+
+        #toggle-editor-btn {
+            width: 100%;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Позиционирование панели информации */
+        #city-info-panel {
+            position: fixed;
+            top: 75px; /* Сразу под кнопкой */
+            left: 20px;
+            width: 350px;
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+
+        /* Позиционирование панели редактирования (справа) */
+        #editor-panel {
+            display: none;
+            position: fixed;
+            right: 20px;
+            top: 150px; /* Чтобы не перекрывать управление скоростью */
+            width: 300px;
+        }
+
+        #editor-panel h3 {
+            margin-top: 0;
+            color: #4a6fa5;
+            border-bottom: 1px solid #4a6fa5;
+        }
+
+        #editor-panel input, #editor-panel textarea {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid #4a6fa5;
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        /* Стили из вашего оригинала для контента */
+        #city-info-content {
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        #city-info-panel h3 { margin-top: 0; color: #4a6fa5; border-bottom: 1px solid #4a6fa5; padding-bottom: 8px; }
+        .city-property { margin: 8px 0; padding-left: 5px; border-left: 3px solid #4a6fa5; }
+        .goods-list { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
+        .good-tag { background: rgba(74, 111, 165, 0.3); padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+        .route-item {
+            background: rgba(255, 153, 0, 0.1);
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 5px;
+            border-left: 3px solid #ff9900;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    
+    <div id="editor-toggle-container">
+        <button id="toggle-editor-btn">🛠️ Режим Мастера</button>
+    </div>
+
+    <!-- ФИКСИРОВАННАЯ ПАНЕЛЬ ИНФОРМАЦИИ О ГОРОДЕ (DOM) -->
+    <div id="city-info-panel" class="ui-panel">
+        <h3>🏛️ Информация о городе</h3>
+        <div id="city-info-content">
+            <p>Кликните на любой город на карте для получения информации</p>
+            <div class="city-property">Город: <strong>Не выбран</strong></div>
+            <div class="city-property">Население: -</div>
+            <div class="city-property">Товары: -</div>
+            <div class="city-property">Склад: -</div>
+            <div class="city-property">Активные маршруты: 0</div>
+        </div>
+    </div>
+    
+    <!-- ПАНЕЛЬ УПРАВЛЕНИЯ -->
+    <div class="controls ui-panel">
+        <h3>🎮 Управление</h3>
+        <p>• Прокрутка мыши - зум</p>
+        <p>• ЛКМ + перетаскивание - перемещение</p>
+        <p>• Клик по городу - информация</p>
+        
+        <div class="speed-control">
+            <button id="speed-slow">Медленно (0.5x)</button>
+            <button id="speed-normal" class="active">Нормально (1x)</button>
+            <button id="speed-fast">Быстро (2x)</button>
+        </div>
+        
+        <div class="volume-control">
+            <button id="mute-btn">🔈</button>
+            <input type="range" id="volume-slider" min="0" max="100" value="50">
+        </div>
+    </div>
+                
+    <!-- ПАНЕЛЬ РЕДАКТИРОВАНИЯ -->
+    <div id="editor-panel" class="ui-panel">
+        <h3>📝 Редактор города</h3>
+        <input type="hidden" id="edit-city-id">
+        
+        <label>Название:</label>
+        <input type="text" id="edit-city-name">
+        
+        <label>Описание:</label>
+        <textarea id="edit-city-desc" rows="3"></textarea>
+        
+        <label>Население (чел.):</label>
+        <input type="number" id="edit-city-population">
+
+        <label>Товары (через запятую):</label>
+        <input type="text" id="edit-city-goods">
+        
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button id="save-city-btn" style="background: #28a745;">Сохранить</button>
+            <button id="delete-city-btn" style="background: #dc3545;">Удалить</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    <script type="module" src="src/game.js"></script>
+</body>
+</html>
