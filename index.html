@@ -170,6 +170,28 @@
         </div>
     </div>
 
+    <!-- Панель редактора маршрутов -->
+    <div id="route-editor-panel" class="ui-panel" style="display: none; position: fixed; right: 380px; top: 150px; width: 300px;">
+        <h3>🗺️ Редактор пути</h3>
+        <input type="hidden" id="edit-route-id">
+        
+        <label>Тип пути:</label>
+        <select id="edit-route-type" style="width: 100%; background: #222; color: white; margin-bottom: 10px; padding: 5px;">
+            <option value="track">Сухопутный (Тракт)</option>
+            <option value="water">Водный (Море)</option>
+        </select>
+        
+        <label>Длительность (дней):</label>
+        <input type="number" id="edit-route-duration">
+        
+        <p style="font-size: 0.8em; color: #aaa;">• Тяните за синие точки на линии, чтобы изменить изгиб.<br>• Shift + Клик по линии, чтобы добавить точку.</p>
+
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button id="save-route-btn" style="background: #28a745;">Сохранить</button>
+            <button id="delete-route-btn" style="background: #dc3545;">Удалить</button>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
     <script type="module" src="src/game.js"></script>
 </body>

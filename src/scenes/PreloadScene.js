@@ -30,9 +30,10 @@ export default class PreloadScene extends Phaser.Scene {
         
         // Загрузка изображений
         this.load.image('map', 'assets/images/map.jpg');
-        this.load.image('caravan', 'assets/images/caravan.jpeg');
-        this.load.image('city', 'assets/images/city.jpeg');
-        this.load.image('selected-city', 'assets/images/city.jpeg');
+        this.load.image('caravan', 'assets/images/caravan.png');
+        this.load.image('ship', 'assets/images/ship.png');
+        this.load.image('city', 'assets/images/city.png');
+        this.load.image('selected-city', 'assets/images/city.png');
         
         // Загрузка звуков
         this.load.audio('caravan_sound', ['assets/audio/caravan.mp3', 'assets/audio/caravan.ogg']);
