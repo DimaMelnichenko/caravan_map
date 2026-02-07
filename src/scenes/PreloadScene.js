@@ -41,7 +41,9 @@ export default class PreloadScene extends Phaser.Scene {
         this.load.audio('city_click', ['assets/audio/city_click.mp3', 'assets/audio/city_click.ogg']);
         
         // Загрузка данных
-        this.load.json('routes', 'assets/data/routes.json');
+        this.load.json('cities_data', 'assets/data/cities.json');
+        this.load.json('routes_data', 'assets/data/routes.json');
+        this.load.json('countries_data', 'assets/data/countries.json');
     }
     
     create() {

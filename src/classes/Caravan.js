@@ -1,52 +1,47 @@
 export default class Caravan extends Phaser.GameObjects.Sprite {
-    constructor(scene, x, y, route) {
-        super(scene, x, y, 'caravan');
+    constructor(scene, x, y, type, routeData) {
+        // Выбираем текстуру в зависимости от типа
+        const texture = type === 'water' ? 'ship' : 'caravan';
+        super(scene, x, y, texture);
         
-        this.route = route;
-        this.speed = 1.0;
-        this.goods = [];
-        this.state = 'moving'; // moving, loading, unloading, waiting
-        
-        // Добавляем в сцену
+        this.routeData = routeData;
+        this.type = type;
+
+        // Добавляем объект на сцену
         scene.add.existing(this);
-        scene.physics.add.existing(this);
         
-        // Анимация движения
-        this.createAnimations();
-        
-        // Трейл эффект
-        this.createTrail();
+        // Настраиваем внешний вид
+        this.setScale(type === 'water' ? 0.05 : 0.1);
+        this.setDepth(5);
+
+        // Создаем эффект следа (пыль для караванов, пена для кораблей)
+        this.createTrail(scene, type);
     }
     
-    createAnimations() {
-        this.scene.anims.create({
-            key: 'caravan_move',
-            frames: this.scene.anims.generateFrameNumbers('caravan', { start: 0, end: 3 }),
-            frameRate: 8,
-            repeat: -1
-        });
+    createTrail(scene, type) {
+        // Создаем частицы. В Phaser 3.60+ синтаксис немного изменился
+        const color = type === 'water' ? 0xffffff : 0x6b4e31;
         
-        this.play('caravan_move');
-    }
-    
-    createTrail() {
-        this.trail = this.scene.add.particles('caravan');
-        
-        const emitter = this.trail.createEmitter({
-            speed: 20,
-            scale: { start: 0.3, end: 0 },
+        this.particles = scene.add.particles(0, 0, textureSafeKey(type), {
+            scale: { start: 0.02, end: 0 },
+            alpha: { start: 0.4, end: 0 },
+            lifespan: 600,
+            speed: 10,
+            frequency: 150,
             blendMode: 'ADD',
-            lifespan: 1000,
-            frequency: 100
+            follow: this
         });
         
-        emitter.startFollow(this);
-    }
-    
-    update() {
-        // Обновление состояния каравана
-        if (this.state === 'moving') {
-            // Логика движения
+        this.particles.setDepth(4);
+
+        function textureSafeKey(t) {
+            return t === 'water' ? 'ship' : 'caravan'; // Или можно создать маленькую точку-текстуру
         }
+    }
+
+    // Метод для плавного удаления
+    destroy() {
+        if (this.particles) this.particles.destroy();
+        super.destroy();
     }
 }

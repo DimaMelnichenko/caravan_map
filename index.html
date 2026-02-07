@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Караванная карта</title>
+    <title>Мир Противень</title>
     <style>
         /* ОБЩИЙ СТИЛЬ ДЛЯ ВСЕХ ПАНЕЛЕЙ */
         .ui-panel {
@@ -106,25 +106,69 @@
             border-radius: 5px;
             border-left: 3px solid #ff9900;
         }
+
+         @font-face {
+            font-family: 'MyMedievalFont'; /* Имя, которое мы будем использовать в коде */
+            src: url('assets/fonts/Behrens Modern.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        /* Скрытый элемент, который заставит браузер СРАЗУ начать загрузку шрифта */
+        .font-loader {
+            font-family: 'MyMedievalFont';
+            position: absolute;
+            visibility: hidden;
+            height: 0;
+            width: 0;
+        }
+
+        .editor-row {
+            margin-bottom: 12px;
+        }
+        .editor-row label {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 0.9em;
+            color: #ccc;
+        }
+        .slider-group {
+            background: rgba(255,255,255,0.05);
+            padding: 8px;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
+    <div class="font-loader">Загрузка шрифта...</div>
     <div id="game-container"></div>
     
     <div id="editor-toggle-container">
         <button id="toggle-editor-btn">🛠️ Режим Мастера</button>
+        <div id="editor-sub-btns" style="display: none; flex-direction: column; gap: 5px; margin-top: 5px;">
+            <button id="add-city-btn" style="background: #e67e22; font-weight: bold;">🏘️ Новый город (клик на карту)</button>
+            <button id="add-route-btn" style="background: #6b4e31; font-weight: bold;">🗺️ Проложить путь (город -> город)</button>
+            <button id="add-country-btn" style="background: #28a745; font-weight: bold;">🚩 Новая Держава</button>
+        </div>
     </div>
 
-    <!-- ФИКСИРОВАННАЯ ПАНЕЛЬ ИНФОРМАЦИИ О ГОРОДЕ (DOM) -->
     <div id="city-info-panel" class="ui-panel">
-        <h3>🏛️ Информация о городе</h3>
-        <div id="city-info-content">
-            <p>Кликните на любой город на карте для получения информации</p>
-            <div class="city-property">Город: <strong>Не выбран</strong></div>
-            <div class="city-property">Население: -</div>
-            <div class="city-property">Товары: -</div>
-            <div class="city-property">Склад: -</div>
-            <div class="city-property">Активные маршруты: 0</div>
+        <!-- Добавляем стиль флекс для заголовка, чтобы стрелка была справа -->
+        <h3 id="city-info-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: 0;">
+            <span>🏛️ Информация</span>
+            <span id="panel-toggle-arrow" style="transition: transform 0.3s ease; display: inline-block;">▼</span>
+        </h3>
+        
+        <!-- Обертка для контента, которую мы будем скрывать -->
+        <div id="city-info-body" style="overflow: hidden; transition: max-height 0.3s ease-out, margin-top 0.3s; max-height: 1000px; margin-top: 15px;">
+            <div id="city-info-content">
+                <p>Кликните на любой город на карте для получения информации</p>
+                <div class="city-property">Город: <strong>Не выбран</strong></div>
+                <div class="city-property">Население: -</div>
+                <div class="city-property">Товары: -</div>
+                <div class="city-property">Склад: -</div>
+                <div class="city-property">Активные маршруты: 0</div>
+            </div>
         </div>
     </div>
     
@@ -181,14 +225,64 @@
             <option value="water">Водный (Море)</option>
         </select>
         
-        <label>Длительность (дней):</label>
-        <input type="number" id="edit-route-duration">
+        <!-- НОВЫЕ ПОЛЯ -->
+        <label>Качество дороги (Коэф.):</label>
+        <input type="number" id="edit-route-coeff" step="0.1" min="0.1" max="3.0" title="1.0 - норма, 0.5 - грязь (медленно), 1.5 - мощеная (быстро)">
         
-        <p style="font-size: 0.8em; color: #aaa;">• Тяните за синие точки на линии, чтобы изменить изгиб.<br>• Shift + Клик по линии, чтобы добавить точку.</p>
+        <label>Кол-во транспорта:</label>
+        <input type="number" id="edit-route-count" min="0" max="10">
+        
+        <p style="font-size: 0.8em; color: #aaa;">• Тяните за синие точки на линии.<br>• Shift + Клик - добавить точку.</p>
 
         <div style="display: flex; gap: 10px; margin-top: 10px;">
             <button id="save-route-btn" style="background: #28a745;">Сохранить</button>
             <button id="delete-route-btn" style="background: #dc3545;">Удалить</button>
+        </div>
+    </div>
+
+    <!-- ПАНЕЛЬ РЕДАКТОРА СТРАНЫ -->
+    <div id="country-editor-panel" class="ui-panel" style="display: none; position: fixed; right: 20px; top: 150px; width: 350px;">
+        <h3>🚩 Редактор страны</h3>
+        <input type="hidden" id="edit-country-id">
+        
+        <div class="editor-row">
+            <label>Название:</label>
+            <input type="text" id="edit-country-name">
+        </div>
+        
+        <div class="editor-row">
+            <label>Раса:</label>
+            <input type="text" id="edit-country-race">
+        </div>
+        
+        <div class="editor-row">
+            <label>Религия:</label>
+            <input type="text" id="edit-country-religion">
+        </div>
+
+        <div class="editor-row">
+            <label>Население:</label>
+            <input type="number" id="edit-country-pop">
+        </div>
+
+        <div class="editor-row slider-group">
+            <label>Культура: <span id="val-culture" style="color: #4a6fa5; font-weight: bold;">0</span>/3</label>
+            <input type="range" id="edit-country-culture" min="0" max="3" step="1" style="width: 100%;">
+        </div>
+        
+        <div class="editor-row slider-group">
+            <label>Воинственность: <span id="val-militancy" style="color: #dc3545; font-weight: bold;">0</span>/10</label>
+            <input type="range" id="edit-country-militancy" min="0" max="10" step="1" style="width: 100%;">
+        </div>
+
+        <div class="editor-row slider-group">
+            <label>Наклон текста: <span id="val-angle" style="color: #ffcc00; font-weight: bold;">0</span>°</label>
+            <input type="range" id="edit-country-angle" min="-180" max="180" step="1" style="width: 100%;">
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <button id="save-country-btn" style="background: #28a745; flex: 1;">Сохранить</button>
+            <button id="delete-country-btn" style="background: #dc3545; flex: 1;">Удалить</button>
         </div>
     </div>
 

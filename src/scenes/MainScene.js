@@ -1,3 +1,5 @@
+import Caravan from '../classes/Caravan.js';
+
 export default class MainScene extends Phaser.Scene {
     constructor() {
         super({ key: 'MainScene' });
@@ -12,15 +14,39 @@ export default class MainScene extends Phaser.Scene {
         this.selectedRoute = null;
         this.editHandles = []; // Массив визуальных точек-маркеров
     }
+
+    async create() { // Добавляем async перед названием метода
+        try {
+            // Ждем самого ответа от сервера
+            const response = await fetch('/api/load'); 
+            
+            // Ждем превращения ответа в JSON объект
+            this.routesData = await response.json(); 
+
+            // ТЕПЕРЬ данные в this.routesData загружены. 
+            // Только после этого можно запускать отрисовку карты:
+            this.initGame(); 
+            
+        } catch (err) {
+            console.error("Ошибка при загрузке данных из БД:", err);
+        }
+    }
     
-    create() {
+    initGame() {
         // Добавление карты
         this.map = this.add.image(0, 0, 'map')
             .setOrigin(0)
             .setScale(1.5);
+
+        this.baseSpeeds = {
+            track: 20,  // Базовая скорость каравана (пикс/сек)
+            water: 30   // Базовая скорость корабля (пикс/сек)
+        };
         
-        // Сохранение данных маршрутов
-        this.routesData = this.cache.json.get('routes');
+
+        this.isPlacingCity = false; // Режим ожидания клика для города
+        this.isCreatingRoute = false;
+        this.firstCityForRoute = null;
         
         // Настройка камеры
         this.cameras.main.setBounds(0, 0, this.map.width * 1.5, this.map.height * 1.5);
@@ -56,38 +82,58 @@ export default class MainScene extends Phaser.Scene {
         // Переключение режима редактора
         document.getElementById('toggle-editor-btn').onclick = () => {
             this.isEditorMode = !this.isEditorMode;
-            const cityPanel = document.getElementById('editor-panel');
-            const routePanel = document.getElementById('route-editor-panel'); // Наша панель пути
+            const subBtns = document.getElementById('editor-sub-btns');
             const btn = document.getElementById('toggle-editor-btn');
             
-            cityPanel.style.display = this.isEditorMode ? 'block' : 'none';
-            
+            // Показываем под-кнопки
+            subBtns.style.display = this.isEditorMode ? 'flex' : 'none';
+            this.isPlacingCity = false; // Сбрасываем режим стройки при переключении
+            this.updatePlacementCursor();
+
             if (this.isEditorMode) {
                 btn.innerText = '🏰 Выйти из режима мастера';
                 btn.style.background = '#2a4f85';
-                if (this.selectedCity) this.openEditor(this.selectedCity.data);
             } else {
-                // УБОРКА ПРИ ВЫХОДЕ:
                 btn.innerText = '🛠️ Режим Мастера';
                 btn.style.background = '#4a6fa5';
-                
-                // Скрываем панель маршрута
-                routePanel.style.display = 'none';
-                
-                // Удаляем синие точки (ручки)
-                this.editHandles.forEach(h => h.destroy());
-                this.editHandles = [];
-                
-                // Сбрасываем выделение маршрута
-                this.selectedRoute = null;
-                
-                // Полная перерисовка, чтобы убрать яркую подсветку
-                this.refreshScene();
+                // Скрываем все панели (город, путь, страна)
+                document.getElementById('editor-panel').style.display = 'none';
+                document.getElementById('route-editor-panel').style.display = 'none';
+                document.getElementById('country-editor-panel').style.display = 'none';
             }
         };
 
+        document.getElementById('add-city-btn').onclick = (e) => {
+            e.stopPropagation();
+            this.isPlacingCity = !this.isPlacingCity;
+            this.updatePlacementCursor();
+            
+            const btn = document.getElementById('add-city-btn');
+            btn.style.background = this.isPlacingCity ? '#ffcc00' : '#e67e22';
+            btn.innerText = this.isPlacingCity ? '📍 Укажите место на карте' : '🏘️ Новый город (клик на карту)';
+        };
+
+        // Логика кнопки "Проложить путь"
+        document.getElementById('add-route-btn').onclick = (e) => {
+            e.stopPropagation();
+            this.isCreatingRoute = !this.isCreatingRoute;
+            this.firstCityForRoute = null; // Сброс при каждом нажатии кнопки
+            
+            const btn = document.getElementById('add-route-btn');
+            btn.style.background = this.isCreatingRoute ? '#ffcc00' : '#6b4e31';
+            btn.innerText = this.isCreatingRoute ? '📍 Выберите первый город' : '🗺️ Проложить путь (город -> город)';
+            
+            // Отключаем режим строительства города, если он был включен
+            this.isPlacingCity = false;
+            this.updatePlacementCursor();
+        };
+
+        // Создаем графический объект для "призрачной линии" (один раз)
+        this.ghostGraphics = this.add.graphics().setDepth(100);
+
         // Сохранение города
         document.getElementById('save-city-btn').onclick = () => this.saveCityData();
+        document.getElementById('delete-city-btn').onclick = () => this.deleteCityData();
 
         window.gameScene = this;
 
@@ -97,9 +143,12 @@ export default class MainScene extends Phaser.Scene {
 
         document.getElementById('save-route-btn').onclick = () => {
             if (this.selectedRoute) {
-                this.selectedRoute.duration = parseInt(document.getElementById('edit-route-duration').value);
                 this.selectedRoute.type = document.getElementById('edit-route-type').value;
-                this.saveDataToServer(); // Универсальный метод сохранения всего JSON
+                this.selectedRoute.speedCoeff = parseFloat(document.getElementById('edit-route-coeff').value);
+                this.selectedRoute.unitCount = parseInt(document.getElementById('edit-route-count').value);
+                
+                this.refreshScene(); // Чтобы сразу применилась новая скорость и кол-во
+                this.saveDataToServer();
             }
         };
 
@@ -113,13 +162,65 @@ export default class MainScene extends Phaser.Scene {
                 this.saveDataToServer();
             }
         };
+
+        this.infoPanelInit();
+
+        document.getElementById('save-country-btn').onclick = () => this.saveCountryData();
+        document.getElementById('add-country-btn').onclick = () => this.createNewCountry();
+        document.getElementById('delete-country-btn').onclick = () => {
+            const id = parseInt(document.getElementById('edit-country-id').value);
+            this.routesData.countries = this.routesData.countries.filter(c => c.id !== id);
+            this.createCountries(this.routesData.countries);
+            document.getElementById('country-editor-panel').style.display = 'none';
+            this.saveDataToServer();
+        };
+
+        // Слушатели для живого обновления цифр в панели страны
+        const cultureSlider = document.getElementById('edit-country-culture');
+        const militancySlider = document.getElementById('edit-country-militancy');
+
+        if (cultureSlider) {
+            cultureSlider.oninput = function() {
+                document.getElementById('val-culture').innerText = this.value;
+            };
+        }
+
+        if (militancySlider) {
+            militancySlider.oninput = function() {
+                document.getElementById('val-militancy').innerText = this.value;
+            };
+        }
+
+        // Находим ползунок наклона
+        const angleSlider = document.getElementById('edit-country-angle');
+        if (angleSlider) {
+            angleSlider.oninput = () => {
+                const val = angleSlider.value;
+                document.getElementById('val-angle').innerText = val;
+                
+                // Живой предпросмотр: находим выбранный текст на карте и крутим его
+                const id = parseInt(document.getElementById('edit-country-id').value);
+                const textObj = this.countryObjects.find(obj => obj.getData('countryData').id === id);
+                if (textObj) {
+                    textObj.setAngle(val);
+                }
+            };
+        }
         
         // Автовыбор первого города для демонстрации
         setTimeout(() => {
             if (this.cities.length > 0) {
-                this.selectCity(this.cities[0].data);
+                this.selectCity(this.cities[10].data);
             }
         }, 1000);
+    }
+
+    updatePlacementCursor() {
+        if (this.isPlacingCity) {
+            this.input.setDefaultCursor('crosshair'); // Крестик, когда мы "строим"
+        } else {
+            this.input.setDefaultCursor('default');
+        }
     }
 
     setupRouteEditing() {
@@ -145,6 +246,35 @@ export default class MainScene extends Phaser.Scene {
                 // И сохраняем автоматически (по желанию) или ждем нажатия кнопки Сохранить
             }
         });
+    }
+
+    infoPanelInit() {
+        const panelHeader = document.getElementById('city-info-header');
+        const panelBody = document.getElementById('city-info-body');
+        const panelArrow = document.getElementById('panel-toggle-arrow');
+
+        panelHeader.onclick = () => {
+            const isCollapsed = panelBody.style.maxHeight === '0px';
+            
+            if (isCollapsed) {
+                // Разворачиваем
+                panelBody.style.maxHeight = '1000px';
+                panelBody.style.marginTop = '15px';
+                panelArrow.style.transform = 'rotate(0deg)';
+            } else {
+                // Сворачиваем
+                panelBody.style.maxHeight = '0px';
+                panelBody.style.marginTop = '0px';
+                panelArrow.style.transform = 'rotate(-90deg)';
+            }
+        };
+
+        // Сохраним ссылку на функцию раскрытия, чтобы использовать её при клике на город
+        this.expandInfoPanel = () => {
+            panelBody.style.maxHeight = '1000px';
+            panelBody.style.marginTop = '15px';
+            panelArrow.style.transform = 'rotate(0deg)';
+        };       
     }
 
     showRouteHandles(route) {
@@ -185,8 +315,10 @@ export default class MainScene extends Phaser.Scene {
         }
         
         this.routesData.routes.forEach(route => {
-            const startCity = this.cities.find(c => c.data.id === route.from).data;
-            const endCity = this.cities.find(c => c.data.id === route.to).data;
+            const startCity = this.cities.find(c => c.data.id === route.from_id).data;
+            const endCity = this.cities.find(c => c.data.id === route.to_id).data;
+
+            if (!startCity || !endCity) return; 
             
             const allPoints = [new Phaser.Math.Vector2(startCity.x, startCity.y)];
             if (route.points) {
@@ -201,26 +333,33 @@ export default class MainScene extends Phaser.Scene {
             
             // РИСУЕМ ОБЫЧНУЮ ЛИНИЮ
             const color = (route.type === 'water' ? 0xaaaaff : 0x6b4e31);
-            this.routeGraphics.lineStyle(2, color, 0.4);
             
             if (route.type === 'water') {
-                const points = curve.getPoints(100);
+                const pathLength = curve.getLength();
+                const segmentLength = 12; 
+                const divisions = Math.max(1, Math.floor(pathLength / segmentLength));
+                
+                // ВАЖНО: используем getSpacedPoints вместо getPoints
+                const points = curve.getSpacedPoints(divisions); 
+                
+                this.routeGraphics.lineStyle(2, color, 0.4);
                 for (let i = 0; i < points.length - 1; i += 2) {
                     this.routeGraphics.lineBetween(points[i].x, points[i].y, points[i+1].x, points[i+1].y);
                 }
-            } else {
-                curve.draw(this.routeGraphics);
-            }
-
-            // РИСУЕМ ПОДСВЕТКУ ПОВЕРХ, ЕСЛИ МАРШРУТ ВЫБРАН
-            if (isSelected) {
-                this.highlightGraphics.lineStyle(4, 0x00ff00, 1); // Яркий зеленый
-                if (route.type === 'water') {
-                    const points = curve.getPoints(100);
+                
+                if (isSelected) {
+                    this.highlightGraphics.lineStyle(4, 0x00ff00, 1);
                     for (let i = 0; i < points.length - 1; i += 2) {
                         this.highlightGraphics.lineBetween(points[i].x, points[i].y, points[i+1].x, points[i+1].y);
                     }
-                } else {
+                }
+            } else {
+                // Для сухопутных путей рисуем сплошную линию
+                this.routeGraphics.lineStyle(2, color, 0.4);
+                curve.draw(this.routeGraphics);
+                
+                if (isSelected) {
+                    this.highlightGraphics.lineStyle(4, 0x00ff00, 1);
                     curve.draw(this.highlightGraphics);
                 }
             }
@@ -228,56 +367,59 @@ export default class MainScene extends Phaser.Scene {
     }
 
     createFollowers() {
-
-        if (this.followersSprites) {
-            this.followersSprites.forEach(s => s.destroy());
+        if (this.caravans) {
+            this.caravans.forEach(item => {
+                if (item.tween) item.tween.remove();
+                if (item.sprite) item.sprite.destroy();
+            });
         }
-        this.followersSprites = [];
+        this.caravans = [];
 
         this.routesData.routes.forEach(route => {
-            const numSprites = route.type === 'water' ? 1 : 3; // Кораблей меньше, караванов больше
-            const spacing = 1 / numSprites;
+            if (!route.curve) return;
 
-            for (let i = 0; i < numSprites; i++) {
-                const spriteKey = route.type === 'water' ? 'ship' : 'caravan';
-                const sprite = this.add.sprite(0, 0, spriteKey)
-                    .setScale(route.type === 'water' ? 0.05 : 0.1)
-                    .setDepth(5);
+            // 1. Берем параметры из данных или ставим дефолтные
+            const speedCoeff = route.speedCoeff || 1.0; // Коэффициент дороги (1.0 - норма)
+            const unitCount = route.unitCount !== undefined ? route.unitCount : (route.type === 'water' ? 1 : 3);
+            
+            // 2. Рассчитываем реальную скорость: (Базовая * Коэффициент)
+            const baseSpeed = this.baseSpeeds[route.type] || 50;
+            const finalSpeed = baseSpeed * speedCoeff;
 
-                // Объект-пустышка для анимации прогресса
+            // 3. Рассчитываем время в пути: (Длина пути в пикселях / Скорость) * 1000 мс
+            const pathLength = route.curve.getLength();
+            const travelTimeMs = (pathLength / finalSpeed) * 1000;
+
+            // Сохраняем рассчитанную длительность для отображения в инфо (в днях, если нужно)
+            route.calculatedDuration = Math.round(travelTimeMs / 1000); 
+
+            const spacing = 1 / unitCount;
+
+            for (let i = 0; i < unitCount; i++) {
+                const caravanSprite = new Caravan(this, 0, 0, route.type, route);
                 const follower = { t: 0, vec: new Phaser.Math.Vector2() };
 
                 const tween = this.tweens.add({
                     targets: follower,
                     t: 1,
                     ease: 'Linear',
-                    duration: (route.duration * 1000) / window.gameSpeed,
+                    duration: travelTimeMs / (window.gameSpeed || 1),
                     repeat: -1,
-                    delay: i * (spacing * 10000), // Распределяем по времени
+                    delay: i * (spacing * (travelTimeMs / (window.gameSpeed || 1))),
                     onUpdate: () => {
-                        // 1. Получаем точку на кривой по времени t
-                        route.curve.getPoint(follower.t, follower.vec);
-                        sprite.setPosition(follower.vec.x, follower.vec.y);
+                        route.curve.getPointAt(follower.t, follower.vec);
+                        caravanSprite.setPosition(follower.vec.x, follower.vec.y);
 
-                        // 2. Получаем вектор направления (касательную)
-                        const tangent = route.curve.getTangent(follower.t);
+                        const tangent = route.curve.getTangentAt(follower.t);
                         const angle = Phaser.Math.RadToDeg(Math.atan2(tangent.y, tangent.x));
+                        caravanSprite.setAngle(angle);
                         
-                        // 3. Поворачиваем и фиксим flip
-                        sprite.setAngle(angle);
-                        if (angle > 90 || angle < -90) {
-                            sprite.setFlipY(true);
-                        } else {
-                            sprite.setFlipY(false);
-                        }
+                        if (angle > 90 || angle < -90) caravanSprite.setFlipY(true);
+                        else caravanSprite.setFlipY(false);
                     }
                 });
 
-                // Добавляем в список для последующей очистки
-                this.caravans.push({
-                    sprite: sprite,
-                    tween: tween
-                });
+                this.caravans.push({ sprite: caravanSprite, tween: tween });
             }
         });
     }
@@ -307,58 +449,110 @@ export default class MainScene extends Phaser.Scene {
     }
     
     setupDragPanning() {
+        // 1. Отключаем стандартное поведение средней кнопки мыши в браузере (чтобы не появлялся значок прокрутки)
+        this.game.canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 1) e.preventDefault();
+        });
+
         this.input.on('pointerdown', (pointer, gameObjects) => {
             const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-            
-            // 1. Проверяем, есть ли под курсором интерактивные объекты (города или точки пути)
-            // Мы ищем среди них города или ручки управления
-            const clickedCitySprite = gameObjects.find(obj => obj.texture && obj.texture.key === 'city');
-            const clickedHandle = gameObjects.find(obj => obj.getData('type') === 'pathHandle');
-            
-            const isOverObject = !!(clickedCitySprite || clickedHandle);
+            const clickedObject = gameObjects.length > 0;
 
-            // --- ЛОГИКА РЕДАКТОРА ---
-            if (this.isEditorMode) {
-                // Shift + Клик: Добавление точки пути
-                if (this.shiftKey.isDown && this.selectedRoute) {
-                    if (!this.selectedRoute.points) this.selectedRoute.points = [];
-                    this.selectedRoute.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
-                    this.refreshScene();
-                    this.showRouteHandles(this.selectedRoute);
-                    return;
-                }
-
-                // Клик по пустому месту в режиме мастера: Создание города
-                if (!isOverObject) {
-                    this.createNewCity(worldPoint.x, worldPoint.y);
-                    return;
-                }
-            }
-
-            // --- ЛОГИКА ОБЫЧНОГО ВЫБОРА И ПАНОРАМИРОВАНИЯ ---
-            if (clickedCitySprite) {
-                // Если кликнули по городу — панорамирование НЕ начинаем.
-                // Клик по самому спрайту обработается его собственным событием .on('pointerdown')
+            // --- ЛОГИКА СРЕДНЕЙ КНОПКИ (ПАНОРАМИРОВАНИЕ) ---
+            if (pointer.middleButtonDown()) {
+                this.isDragging = true;
+                this.dragStart = {
+                    x: pointer.x, y: pointer.y,
+                    scrollX: this.cameras.main.scrollX, scrollY: this.cameras.main.scrollY
+                };
+                this.input.setDefaultCursor('grabbing');
                 return;
             }
 
-            if (!isOverObject) {
-                // Если кликнули в пустоту — начинаем двигать карту
-                this.isDragging = true;
-                this.dragStart = {
-                    x: pointer.x,
-                    y: pointer.y,
-                    scrollX: this.cameras.main.scrollX,
-                    scrollY: this.cameras.main.scrollY
-                };
-                this.input.setDefaultCursor('grabbing');
+            // --- ЛОГИКА ЛЕВОЙ КНОПКИ ---
+            if (pointer.leftButtonDown()) {
+
+                if (this.isCreatingRoute) {
+                    // Ищем, кликнули ли мы по городу
+                    const clickedCitySprite = gameObjects.find(obj => obj.texture && obj.texture.key === 'city');
+                    
+                    if (clickedCitySprite) {
+                        const cityId = clickedCitySprite.getData('cityId');
+                        const cityData = this.routesData.cities.find(c => c.id === cityId);
+
+                        if (!this.firstCityForRoute) {
+                            // ШАГ 1: Выбрали первый город
+                            this.firstCityForRoute = cityData;
+                            document.getElementById('add-route-btn').innerText = `📍 Из ${cityData.name} в...`;
+                            console.log("Первая точка пути:", cityData.name);
+                        } else {
+                            // ШАГ 2: Выбрали второй город
+                            if (this.firstCityForRoute.id === cityData.id) {
+                                alert("Нельзя проложить путь в тот же самый город!");
+                                return;
+                            }
+                            
+                            this.createNewRoute(this.firstCityForRoute.id, cityData.id);
+                            
+                            // Завершаем режим
+                            this.isCreatingRoute = false;
+                            this.firstCityForRoute = null;
+                            this.ghostGraphics.clear();
+                            const btn = document.getElementById('add-route-btn');
+                            btn.style.background = '#6b4e31';
+                            btn.innerText = '🗺️ Проложить путь (город -> город)';
+                        }
+                        return; // Прерываем, чтобы не сработали другие клики
+                    }
+                }
+                
+                // 1. ПРИОРИТЕТ: Режим установки нового города
+                if (this.isPlacingCity) {
+                    this.createNewCity(worldPoint.x, worldPoint.y);
+                    this.isPlacingCity = false;
+                    const btn = document.getElementById('add-city-btn');
+                    btn.style.background = '#e67e22';
+                    btn.innerText = '🏘️ Новый город (клик на карту)';
+                    this.updatePlacementCursor();
+                    return;
+                }
+
+                // 2. ПРИОРИТЕТ: Добавление точки к существующему пути (Shift + Клик)
+                // Работает, если мы в режиме мастера И выбран какой-то путь
+                if (this.isEditorMode && this.shiftKey.isDown && this.selectedRoute) {
+                    if (!this.selectedRoute.points) this.selectedRoute.points = [];
+                    
+                    // Добавляем новую точку в массив
+                    this.selectedRoute.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+                    
+                    // Сразу перерисовываем всё
+                    this.refreshScene(); 
+                    this.showRouteHandles(this.selectedRoute); // Обновляем синие точки
+                    return;
+                }
+
+                // 3. ПРИОРИТЕТ: Сброс выделения, если кликнули по пустому месту (без Shift)
+                if (this.isEditorMode && !clickedObject) {
+                    // Скрываем панели, если кликнули в "молоко"
+                    document.getElementById('editor-panel').style.display = 'none';
+                    document.getElementById('country-editor-panel').style.display = 'none';
+                    document.getElementById('route-editor-panel').style.display = 'none';
+                    
+                    // Убираем точки редактирования пути
+                    this.editHandles.forEach(h => h.destroy());
+                    this.editHandles = [];
+                    this.selectedRoute = null;
+                    this.drawAllRoutes(); // Перерисовываем, чтобы убрать подсветку
+                }
             }
         });
 
+        // Перемещение (работает, когда зажата кнопка, инициировавшая dragging)
         this.input.on('pointermove', (pointer) => {
-            if (this.isDragging && pointer.isDown) {
+            if (this.isDragging) {
                 const deltaX = (this.dragStart.x - pointer.x) / this.cameras.main.zoom;
                 const deltaY = (this.dragStart.y - pointer.y) / this.cameras.main.zoom;
+                
                 this.cameras.main.scrollX = this.dragStart.scrollX + deltaX;
                 this.cameras.main.scrollY = this.dragStart.scrollY + deltaY;
             }
@@ -368,6 +562,7 @@ export default class MainScene extends Phaser.Scene {
             this.isDragging = false;
             this.input.setDefaultCursor('default');
         };
+
         this.input.on('pointerup', stopDrag);
         this.input.on('gameout', stopDrag);
     }
@@ -441,15 +636,75 @@ export default class MainScene extends Phaser.Scene {
         }
     }
 
+    async deleteCityData() {
+        const id = parseInt(document.getElementById('edit-city-id').value);
+        if (!id) return;
+
+        const cityIndex = this.routesData.cities.findIndex(c => c.id === id);
+        
+        if (cityIndex === -1) {
+            alert("Город не найден в базе данных.");
+            return;
+        }
+
+        const cityName = this.routesData.cities[cityIndex].name;
+        
+        // Подтверждение удаления
+        if (!confirm(`Вы уверены, что хотите удалить город ${cityName}? Все торговые пути к нему будут уничтожены.`)) {
+            return;
+        }
+
+        // 1. Удаляем город из массива данных
+        this.routesData.cities.splice(cityIndex, 1);
+
+        // 2. Очищаем маршруты, которые вели в этот город или из него
+        this.routesData.routes = this.routesData.routes.filter(route => 
+            route.from !== id && route.to !== id
+        );
+
+        // 3. Сбрасываем состояние выбора в игре
+        this.selectedCity = null;
+        this.selectedRoute = null;
+
+        // 4. Обновляем UI (скрываем панели и чистим инфо)
+        document.getElementById('editor-panel').style.display = 'none';
+        document.getElementById('route-editor-panel').style.display = 'none';
+        document.getElementById('city-info-content').innerHTML = '<p>Город удален.</p>';
+
+        // 5. Визуальное обновление карты
+        this.refreshMap();   // Пересоздает спрайты городов
+        this.refreshScene(); // Перерисовывает пути и перезапускает караваны
+
+        // 6. Сохранение изменений на сервере
+        await this.saveDataToServer();
+        
+        console.log(`Город ${cityName} успешно удален.`);
+    }
+
     refreshMap() {
-        // Очищаем текущие спрайты и тексты городов
+        // 1. Запоминаем ID текущего выбранного города, если он есть
+        const selectedId = this.selectedCity ? this.selectedCity.data.id : null;
+
+        // 2. Очищаем текущие спрайты и тексты
         this.cities.forEach(c => {
-            c.sprite.destroy();
-            c.text.destroy();
+            if (c.sprite) c.sprite.destroy();
+            if (c.text) c.text.destroy();
         });
         this.cities = [];
-        // Пересоздаем из обновленных данных
+
+        // 3. Обнуляем ссылку на выбранный город перед пересозданием
+        this.selectedCity = null;
+
+        // 4. Пересоздаем спрайты из обновленных данных
         this.createCities(this.routesData.cities);
+
+        // 5. Если до этого был выбран город, выбираем его снова (уже новый спрайт)
+        if (selectedId) {
+            const newCityData = this.routesData.cities.find(c => c.id === selectedId);
+            if (newCityData) {
+                this.selectCity(newCityData);
+            }
+        }
     }
     
     checkCityClick(screenX, screenY) {
@@ -486,22 +741,49 @@ export default class MainScene extends Phaser.Scene {
 
     createCountries(countryData) {
         if (!countryData) return;
+        
+        // Очистим старые объекты, если они были (для refreshMap)
+        if (this.countryObjects) {
+            this.countryObjects.forEach(obj => obj.destroy());
+        }
+        this.countryObjects = [];
 
         countryData.forEach(data => {
             const countryText = this.add.text(data.x, data.y, data.name, {
-                font: `${data.fontSize || '40px'} "Behrens Modern"`,
-                fill: data.color || '#ffffff',
+                fontFamily: 'MyMedievalFont',
+                fontSize: data.fontSize || '40px',
+                fill: data.color || '#ff0000',
                 stroke: '#000000',
-                strokeThickness: 4,
-                align: 'center',
-                fontStyle: 'italic',
+                strokeThickness: 4
+            })
+            .setOrigin(0.5)
+            .setDepth(1)
+            .setAngle(data.angle || 0)
+            .setInteractive({ useHandCursor: true, draggable: true }) // Делаем перетаскиваемым
+            .setData('countryData', data);
+
+            // Клик по стране
+            countryText.on('pointerdown', (pointer) => {
+                if (this.isEditorMode) {
+                    this.openCountryEditor(data);
+                } else {
+                    // Показываем инфо о стране в левой панели
+                    this.updateCountryInfoPanel(data);
+                }
+                this.sound.play('city_click', { volume: window.gameVolume });
             });
 
-            countryText
-                .setOrigin(0.5)
-                .setDepth(1)               // Самый нижний слой (над картой, но под всем остальным)
-                .setAngle(data.angle)            // Можно добавить легкий наклон для красоты
-                .setShadow(2, 2, 'rgba(0,0,0,0.5)', 5);
+            // Перетаскивание
+            countryText.on('drag', (pointer, dragX, dragY) => {
+                if (this.isEditorMode) {
+                    countryText.x = Math.round(dragX);
+                    countryText.y = Math.round(dragY);
+                    data.x = countryText.x;
+                    data.y = countryText.y;
+                }
+            });
+
+            this.countryObjects.push(countryText);
         });
     }
 
@@ -570,6 +852,14 @@ export default class MainScene extends Phaser.Scene {
     }
     
     selectCity(cityData) {
+
+         // Если объект спрайта уже уничтожен, просто сбрасываем ссылку
+        if (this.selectedCity && (!this.selectedCity.sprite || !this.selectedCity.sprite.active)) {
+            this.selectedCity = null;
+        }
+
+        if (this.expandInfoPanel) this.expandInfoPanel();
+
         console.log('Выбран город:', cityData.name);
         
         // 1. Сброс предыдущего выделения
@@ -598,7 +888,7 @@ export default class MainScene extends Phaser.Scene {
         // Увеличиваем масштаб
         this.tweens.add({
             targets: city.sprite,
-            scale: this.cityScale + 0.15,
+            scale: this.cityScale + 0.07,
             duration: 300,
             ease: 'Back.easeOut'
         });
@@ -665,7 +955,7 @@ export default class MainScene extends Phaser.Scene {
                         onmouseout="this.style.background='rgba(255, 153, 0, 0.1)'">
                         <strong>${direction} ${targetCity?.name || 'Неизвестный город'}</strong><br>
                         <small>${route.name || (route.type === 'water' ? 'Морской путь' : 'Тракт')}</small><br>
-                        <small>Дистанция: ${route.distance || 0} км, Длительность: ${route.duration || 0} дн.</small>
+                        <small>Дистанция: ${route.distance || 0} км, Длительность: ${route.calculatedDuration || 0} дн.</small>
                     </div>
                 `;
             }).join('')
@@ -675,6 +965,15 @@ export default class MainScene extends Phaser.Scene {
             ? cityData.population.toLocaleString('ru-RU') + ' жителей'
             : (cityData.population || 'Нет данных');
         
+        let debugInfo = '';
+        //if (this.isEditorMode === true) {
+            debugInfo = `
+                <div class="city-property">id: ${cityData.id}</div>
+                <div class="city-property">x: ${cityData.x}</div>
+                <div class="city-property">y: ${cityData.y}</div>
+            `;
+        //}    
+
         // Обновляем содержимое DOM-элемента
         contentElement.innerHTML = `
             <div class="city-property">Город: <strong>${cityData.name}</strong></div>
@@ -683,6 +982,7 @@ export default class MainScene extends Phaser.Scene {
             <div class="city-property">Товары: ${goodsHTML}</div>
             <div class="city-property">Склад: ${cityData.storage || '0'} единиц</div>
             <div class="city-property">Активные маршруты (${connectedRoutes.length}):</div>
+            ${debugInfo}
             ${routesHTML}
         `;
         
@@ -719,15 +1019,18 @@ export default class MainScene extends Phaser.Scene {
     }
 
     async saveDataToServer() {
+        const dataToSave = {
+            cities: this.routesData.cities,
+            routes: this.routesData.routes,
+            countries: this.routesData.countries
+        };
+
         try {
-            const response = await fetch(`${window.location.origin}/api/save`, {
+            await fetch(`${window.location.origin}/api/save`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.routesData)
+                body: JSON.stringify(dataToSave)
             });
-            if (response.ok) {
-                console.log("Данные успешно сохранены на сервере");
-            }
         } catch (err) {
             console.error("Ошибка сохранения:", err);
         }
@@ -788,6 +1091,23 @@ export default class MainScene extends Phaser.Scene {
             });
             this.lastGameSpeed = window.gameSpeed;
         }
+
+        // Отрисовка линии прокладываемого пути
+        if (this.isCreatingRoute && this.firstCityForRoute) {
+            const pointer = this.input.activePointer;
+            const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+            
+            this.ghostGraphics.clear();
+            this.ghostGraphics.lineStyle(2, 0xffcc00, 0.8);
+            this.ghostGraphics.lineBetween(
+                this.firstCityForRoute.x, 
+                this.firstCityForRoute.y, 
+                worldPoint.x, 
+                worldPoint.y
+            );
+        } else if (this.ghostGraphics) {
+            this.ghostGraphics.clear();
+        }
     }
 
     refreshScene() {
@@ -825,8 +1145,9 @@ export default class MainScene extends Phaser.Scene {
         if (this.isEditorMode) {
             document.getElementById('route-editor-panel').style.display = 'block';
             document.getElementById('edit-route-id').value = route.id;
-            document.getElementById('edit-route-duration').value = route.duration;
             document.getElementById('edit-route-type').value = route.type;
+            document.getElementById('edit-route-coeff').value = route.speedCoeff || 1.0;
+            document.getElementById('edit-route-count').value = route.unitCount !== undefined ? route.unitCount : (route.type === 'water' ? 1 : 3);
             
             this.showRouteHandles(route); // Показываем синие точки
         } else {
@@ -837,5 +1158,115 @@ export default class MainScene extends Phaser.Scene {
         }
 
         this.drawAllRoutes(); // Перерисовываем для подсветки
+    }
+
+    openCountryEditor(data) {
+        document.getElementById('country-editor-panel').style.display = 'block';
+        document.getElementById('editor-panel').style.display = 'none';
+        document.getElementById('route-editor-panel').style.display = 'none';
+
+        document.getElementById('edit-country-id').value = data.id;
+        document.getElementById('edit-country-name').value = data.name;
+        document.getElementById('edit-country-race').value = data.race || '';
+        document.getElementById('edit-country-religion').value = data.religion || '';
+        document.getElementById('edit-country-pop').value = data.population || 0;
+        
+        // Устанавливаем значения ползунков
+        const culture = data.culture || 0;
+        const militancy = data.militancy || 0;
+        
+        document.getElementById('edit-country-culture').value = culture;
+        document.getElementById('val-culture').innerText = culture; // Обновляем текст
+        
+        document.getElementById('edit-country-militancy').value = militancy;
+        document.getElementById('val-militancy').innerText = militancy; // Обновляем текст
+
+        const angle = data.angle || 0;
+        document.getElementById('edit-country-angle').value = angle;
+        document.getElementById('val-angle').innerText = angle;
+    }
+
+    async saveCountryData() {
+        const id = parseInt(document.getElementById('edit-country-id').value);
+        const country = this.routesData.countries.find(c => c.id === id);
+        
+        if (country) {
+            country.name = document.getElementById('edit-country-name').value;
+            country.race = document.getElementById('edit-country-race').value;
+            country.religion = document.getElementById('edit-country-religion').value;
+            country.population = parseInt(document.getElementById('edit-country-pop').value);
+            country.culture = parseInt(document.getElementById('edit-country-culture').value);
+            country.militancy = parseInt(document.getElementById('edit-country-militancy').value);
+            country.angle = parseInt(document.getElementById('edit-country-angle').value) || 0;
+
+            this.createCountries(this.routesData.countries); // Перерисовываем надписи
+            await this.saveDataToServer();
+            alert('Данные страны сохранены!');
+        }
+    }
+
+    createNewCountry() {
+        const newId = this.routesData.countries.length > 0 
+            ? Math.max(...this.routesData.countries.map(c => c.id)) + 1 : 1;
+        
+        const cam = this.cameras.main;
+        const newCountry = {
+            id: newId,
+            name: "Новая Держава",
+            x: Math.round(cam.midPoint.x),
+            y: Math.round(cam.midPoint.y),
+            race: "Люди",
+            religion: "Нет",
+            population: 1000,
+            culture: 5,
+            militancy: 5
+        };
+
+        this.routesData.countries.push(newCountry);
+        this.createCountries(this.routesData.countries);
+        this.openCountryEditor(newCountry);
+    }
+
+    updateCountryInfoPanel(data) {
+        const content = document.getElementById('city-info-content');
+        content.innerHTML = `
+            <div class="city-property">Страна: <strong>${data.name}</strong></div>
+            <div class="city-property">Основная раса: ${data.race || 'Неизвестно'}</div>
+            <div class="city-property">Религия: ${data.religion || 'Нет'}</div>
+            <div class="city-property">Население: ${data.population?.toLocaleString() || 0} чел.</div>
+            <hr>
+            <div class="city-property">Культура: ${data.culture || 0}/3</div>
+            <div class="city-property">Воинственность: ${data.militancy || 0}/10</div>
+            <p><small>Кликните по городу этой страны для деталей</small></p>
+        `;
+        if (this.expandInfoPanel) this.expandInfoPanel();
+    }
+
+    createNewRoute(fromId, toId) {
+        const newId = this.routesData.routes.length > 0 
+            ? Math.max(...this.routesData.routes.map(r => r.id)) + 1 : 1;
+
+        const newRoute = {
+            id: newId,
+            from: fromId,
+            to: toId,
+            type: "track",
+            points: [],
+            speedCoeff: 1.0,
+            unitCount: 3
+        };
+
+        this.routesData.routes.push(newRoute);
+        
+        // Перерисовываем всё
+        this.refreshScene();
+        
+        // Сразу выбираем этот путь для редактирования
+        this.selectRouteById(newId);
+        
+        // Сохраняем на сервер
+        this.saveDataToServer();
+        
+        console.log(`Путь ID:${newId} создан успешно.`);
     }
 }
