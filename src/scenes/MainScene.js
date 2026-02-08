@@ -1,8 +1,15 @@
 import Caravan from '../classes/Caravan.js';
+import Country from '../classes/Country.js';
+import City from '../classes/City.js';
+import Route from '../classes/Route.js';
+import UIManager from '../classes/UIManager.js';
+import DataService from '../services/DataService.js';
+
 
 export default class MainScene extends Phaser.Scene {
     constructor() {
         super({ key: 'MainScene' });
+        this.dataService = new DataService();
         this.caravans = [];
         this.cities = [];
         this.selectedCity = null;
@@ -13,20 +20,13 @@ export default class MainScene extends Phaser.Scene {
         this.isEditorMode = false;
         this.selectedRoute = null;
         this.editHandles = []; // Массив визуальных точек-маркеров
+        this.routes = [];
     }
 
     async create() { // Добавляем async перед названием метода
         try {
-            // Ждем самого ответа от сервера
-            const response = await fetch('/api/load'); 
-            
-            // Ждем превращения ответа в JSON объект
-            this.routesData = await response.json(); 
-
-            // ТЕПЕРЬ данные в this.routesData загружены. 
-            // Только после этого можно запускать отрисовку карты:
-            this.initGame(); 
-            
+            this.routesData = await this.dataService.loadWorld();
+            this.initGame();
         } catch (err) {
             console.error("Ошибка при загрузке данных из БД:", err);
         }
@@ -42,7 +42,13 @@ export default class MainScene extends Phaser.Scene {
             track: 20,  // Базовая скорость каравана (пикс/сек)
             water: 30   // Базовая скорость корабля (пикс/сек)
         };
+
+        this.routesData.routes.forEach(route => {
+            if (route.from && !route.from_id) route.from_id = route.from;
+            if (route.to && !route.to_id) route.to_id = route.to;
+        });
         
+        this.ui = new UIManager(this);
 
         this.isPlacingCity = false; // Режим ожидания клика для города
         this.isCreatingRoute = false;
@@ -61,6 +67,8 @@ export default class MainScene extends Phaser.Scene {
         
         // 1. Создаем города
         this.createCities(this.routesData.cities);
+
+        this.routes = this.routesData.routes.map(data => new Route(this, data));
         
         // 2. РИСУЕМ ПУТИ (теперь они видны всегда)
         // Этот метод создает объекты Curve внутри routesData.routes
@@ -141,38 +149,86 @@ export default class MainScene extends Phaser.Scene {
         this.setupRouteEditing(); // Перетаскивание точек
 
 
-        document.getElementById('save-route-btn').onclick = () => {
+        document.getElementById('save-route-btn').onclick = async () => {
             if (this.selectedRoute) {
                 this.selectedRoute.type = document.getElementById('edit-route-type').value;
                 this.selectedRoute.speedCoeff = parseFloat(document.getElementById('edit-route-coeff').value);
                 this.selectedRoute.unitCount = parseInt(document.getElementById('edit-route-count').value);
                 
-                this.refreshScene(); // Чтобы сразу применилась новая скорость и кол-во
-                this.saveDataToServer();
+                const success = await this.dataService.saveRoute(this.selectedRoute);
+                if (success) {
+                    this.ui.showNotification('Путь обновлен', 'success');
+                    this.refreshScene();
+                }
             }
         };
 
         // Кнопка удаления маршрута
-        document.getElementById('delete-route-btn').onclick = () => {
-            if (this.selectedRoute && confirm('Удалить этот путь?')) {
-                this.routesData.routes = this.routesData.routes.filter(r => r.id !== this.selectedRoute.id);
-                this.selectedRoute = null;
-                document.getElementById('route-editor-panel').style.display = 'none';
-                this.refreshScene();
-                this.saveDataToServer();
+        document.getElementById('delete-route-btn').onclick = async () => {
+            // 1. Проверяем, выбран ли маршрут
+            if (!this.selectedRoute) return;
+
+            // 2. Подтверждение удаления
+            if (!confirm('Вы уверены, что хотите навсегда удалить этот торговый путь?')) return;
+
+            const routeId = this.selectedRoute.id;
+
+            try {
+                // 3. Удаление из базы данных через DataService
+                const success = await this.dataService.deleteRoute(routeId);
+
+                if (success) {
+                    // 4. Удаление из локального массива данных (чтобы при следующей загрузке его не было)
+                    this.routesData.routes = this.routesData.routes.filter(r => r.id !== routeId);
+
+                    // 5. Сброс текущего выделения
+                    this.selectedRoute = null;
+
+                    // 7. Удаление синих точек-маркеров (handles), если они были
+                    if (this.editHandles) {
+                        this.editHandles.forEach(h => h.destroy());
+                        this.editHandles = [];
+                    }
+
+                    // 8. Визуальное обновление всей сцены (перерисовка линий и перезапуск караванов)
+                    this.refreshScene();
+
+                    // 9. Красивое уведомление
+                    this.ui.showNotification('Торговый путь удален', 'success');
+                } else {
+                    this.ui.showNotification('Ошибка сервера при удалении пути', 'error');
+                }
+            } catch (err) {
+                console.error("Ошибка при удалении маршрута:", err);
+                this.ui.showNotification('Не удалось связаться с сервером', 'error');
             }
         };
 
-        this.infoPanelInit();
-
         document.getElementById('save-country-btn').onclick = () => this.saveCountryData();
         document.getElementById('add-country-btn').onclick = () => this.createNewCountry();
-        document.getElementById('delete-country-btn').onclick = () => {
+        document.getElementById('delete-country-btn').onclick = async () => {
             const id = parseInt(document.getElementById('edit-country-id').value);
-            this.routesData.countries = this.routesData.countries.filter(c => c.id !== id);
-            this.createCountries(this.routesData.countries);
-            document.getElementById('country-editor-panel').style.display = 'none';
-            this.saveDataToServer();
+            if (!id || !confirm('Удалить эту державу из истории мира?')) return;
+
+            try {
+                const success = await this.dataService.deleteCountry(id); // Добавь этот метод в DataService по аналогии с другими
+                if (success) {
+
+                    this.routesData.cities.forEach(city => {
+                        if (city.country_id === id) {
+                            city.country_id = 0; // Стал независимым
+                            this.dataService.saveCity(city); // Обновляем в БД
+                        }
+                    });
+
+                    this.routesData.countries = this.routesData.countries.filter(c => c.id !== id);
+                    this.createCountries(this.routesData.countries); // Перерисовываем карту
+                    this.ui.hideAllEditors();
+                    this.ui.showNotification('Держава стерта с карт', 'success');
+                }
+            } catch (err) {
+                this.ui.showNotification('Ошибка удаления', 'error');
+            }
         };
 
         // Слушатели для живого обновления цифр в панели страны
@@ -200,9 +256,11 @@ export default class MainScene extends Phaser.Scene {
                 
                 // Живой предпросмотр: находим выбранный текст на карте и крутим его
                 const id = parseInt(document.getElementById('edit-country-id').value);
-                const textObj = this.countryObjects.find(obj => obj.getData('countryData').id === id);
-                if (textObj) {
-                    textObj.setAngle(val);
+                const countryObj = this.countryObjects.find(obj => obj.countryData && obj.countryData.id === id);
+        
+                if (countryObj) {
+                    countryObj.setAngle(val);         // Визуально наклоняем текст
+                    countryObj.countryData.angle = val; // Обновляем данные внутри объекта для сохранения
                 }
             };
         }
@@ -210,7 +268,7 @@ export default class MainScene extends Phaser.Scene {
         // Автовыбор первого города для демонстрации
         setTimeout(() => {
             if (this.cities.length > 0) {
-                this.selectCity(this.cities[10].data);
+                this.selectCity(this.cities[10].cityData);
             }
         }, 1000);
     }
@@ -248,35 +306,6 @@ export default class MainScene extends Phaser.Scene {
         });
     }
 
-    infoPanelInit() {
-        const panelHeader = document.getElementById('city-info-header');
-        const panelBody = document.getElementById('city-info-body');
-        const panelArrow = document.getElementById('panel-toggle-arrow');
-
-        panelHeader.onclick = () => {
-            const isCollapsed = panelBody.style.maxHeight === '0px';
-            
-            if (isCollapsed) {
-                // Разворачиваем
-                panelBody.style.maxHeight = '1000px';
-                panelBody.style.marginTop = '15px';
-                panelArrow.style.transform = 'rotate(0deg)';
-            } else {
-                // Сворачиваем
-                panelBody.style.maxHeight = '0px';
-                panelBody.style.marginTop = '0px';
-                panelArrow.style.transform = 'rotate(-90deg)';
-            }
-        };
-
-        // Сохраним ссылку на функцию раскрытия, чтобы использовать её при клике на город
-        this.expandInfoPanel = () => {
-            panelBody.style.maxHeight = '1000px';
-            panelBody.style.marginTop = '15px';
-            panelArrow.style.transform = 'rotate(0deg)';
-        };       
-    }
-
     showRouteHandles(route) {
         // Удаляем старые ручки
         this.editHandles.forEach(h => h.destroy());
@@ -300,128 +329,29 @@ export default class MainScene extends Phaser.Scene {
     }
 
     drawAllRoutes() {
-        // 1. Очищаем основную графику
-        if (this.routeGraphics) {
-            this.routeGraphics.clear();
-        } else {
-            this.routeGraphics = this.add.graphics().setDepth(2);
-        }
+        if (!this.routeGraphics) this.routeGraphics = this.add.graphics().setDepth(2);
+        if (!this.highlightGraphics) this.highlightGraphics = this.add.graphics().setDepth(3);
 
-        // 2. Очищаем графику подсветки выбранного пути
-        if (this.highlightGraphics) {
-            this.highlightGraphics.clear();
-        } else {
-            this.highlightGraphics = this.add.graphics().setDepth(3);
-        }
-        
-        this.routesData.routes.forEach(route => {
-            const startCity = this.cities.find(c => c.data.id === route.from_id).data;
-            const endCity = this.cities.find(c => c.data.id === route.to_id).data;
+        this.routeGraphics.clear();
+        this.highlightGraphics.clear();
 
-            if (!startCity || !endCity) return; 
+        this.routes.forEach(route => {
+            const isSelected = this.selectedRoute && this.selectedRoute.id === route.routeData.id;
             
-            const allPoints = [new Phaser.Math.Vector2(startCity.x, startCity.y)];
-            if (route.points) {
-                route.points.forEach(p => allPoints.push(new Phaser.Math.Vector2(p[0], p[1])));
-            }
-            allPoints.push(new Phaser.Math.Vector2(endCity.x, endCity.y));
-
-            const curve = new Phaser.Curves.Spline(allPoints);
-            route.curve = curve;
-
-            const isSelected = this.selectedRoute && this.selectedRoute.id === route.id;
+            // Вызываем метод рисования самого маршрута
+            // Обычную линию рисуем в routeGraphics
+            route.draw(this.routeGraphics, false);
             
-            // РИСУЕМ ОБЫЧНУЮ ЛИНИЮ
-            const color = (route.type === 'water' ? 0xaaaaff : 0x6b4e31);
-            
-            if (route.type === 'water') {
-                const pathLength = curve.getLength();
-                const segmentLength = 12; 
-                const divisions = Math.max(1, Math.floor(pathLength / segmentLength));
-                
-                // ВАЖНО: используем getSpacedPoints вместо getPoints
-                const points = curve.getSpacedPoints(divisions); 
-                
-                this.routeGraphics.lineStyle(2, color, 0.4);
-                for (let i = 0; i < points.length - 1; i += 2) {
-                    this.routeGraphics.lineBetween(points[i].x, points[i].y, points[i+1].x, points[i+1].y);
-                }
-                
-                if (isSelected) {
-                    this.highlightGraphics.lineStyle(4, 0x00ff00, 1);
-                    for (let i = 0; i < points.length - 1; i += 2) {
-                        this.highlightGraphics.lineBetween(points[i].x, points[i].y, points[i+1].x, points[i+1].y);
-                    }
-                }
-            } else {
-                // Для сухопутных путей рисуем сплошную линию
-                this.routeGraphics.lineStyle(2, color, 0.4);
-                curve.draw(this.routeGraphics);
-                
-                if (isSelected) {
-                    this.highlightGraphics.lineStyle(4, 0x00ff00, 1);
-                    curve.draw(this.highlightGraphics);
-                }
+            // Если выбран — рисуем подсветку в highlightGraphics
+            if (isSelected) {
+                route.draw(this.highlightGraphics, true);
             }
         });
     }
 
     createFollowers() {
-        if (this.caravans) {
-            this.caravans.forEach(item => {
-                if (item.tween) item.tween.remove();
-                if (item.sprite) item.sprite.destroy();
-            });
-        }
-        this.caravans = [];
-
-        this.routesData.routes.forEach(route => {
-            if (!route.curve) return;
-
-            // 1. Берем параметры из данных или ставим дефолтные
-            const speedCoeff = route.speedCoeff || 1.0; // Коэффициент дороги (1.0 - норма)
-            const unitCount = route.unitCount !== undefined ? route.unitCount : (route.type === 'water' ? 1 : 3);
-            
-            // 2. Рассчитываем реальную скорость: (Базовая * Коэффициент)
-            const baseSpeed = this.baseSpeeds[route.type] || 50;
-            const finalSpeed = baseSpeed * speedCoeff;
-
-            // 3. Рассчитываем время в пути: (Длина пути в пикселях / Скорость) * 1000 мс
-            const pathLength = route.curve.getLength();
-            const travelTimeMs = (pathLength / finalSpeed) * 1000;
-
-            // Сохраняем рассчитанную длительность для отображения в инфо (в днях, если нужно)
-            route.calculatedDuration = Math.round(travelTimeMs / 1000); 
-
-            const spacing = 1 / unitCount;
-
-            for (let i = 0; i < unitCount; i++) {
-                const caravanSprite = new Caravan(this, 0, 0, route.type, route);
-                const follower = { t: 0, vec: new Phaser.Math.Vector2() };
-
-                const tween = this.tweens.add({
-                    targets: follower,
-                    t: 1,
-                    ease: 'Linear',
-                    duration: travelTimeMs / (window.gameSpeed || 1),
-                    repeat: -1,
-                    delay: i * (spacing * (travelTimeMs / (window.gameSpeed || 1))),
-                    onUpdate: () => {
-                        route.curve.getPointAt(follower.t, follower.vec);
-                        caravanSprite.setPosition(follower.vec.x, follower.vec.y);
-
-                        const tangent = route.curve.getTangentAt(follower.t);
-                        const angle = Phaser.Math.RadToDeg(Math.atan2(tangent.y, tangent.x));
-                        caravanSprite.setAngle(angle);
-                        
-                        if (angle > 90 || angle < -90) caravanSprite.setFlipY(true);
-                        else caravanSprite.setFlipY(false);
-                    }
-                });
-
-                this.caravans.push({ sprite: caravanSprite, tween: tween });
-            }
-        });
+        // Просто просим каждый маршрут создать свои караваны
+        this.routes.forEach(route => route.spawnCaravans());
     }
     
     setupCameraControls() {
@@ -474,11 +404,10 @@ export default class MainScene extends Phaser.Scene {
 
                 if (this.isCreatingRoute) {
                     // Ищем, кликнули ли мы по городу
-                    const clickedCitySprite = gameObjects.find(obj => obj.texture && obj.texture.key === 'city');
+                    const clickedCity = gameObjects.find(obj => obj instanceof City);
                     
-                    if (clickedCitySprite) {
-                        const cityId = clickedCitySprite.getData('cityId');
-                        const cityData = this.routesData.cities.find(c => c.id === cityId);
+                    if (clickedCity) {
+                        const cityData = clickedCity.cityData;
 
                         if (!this.firstCityForRoute) {
                             // ШАГ 1: Выбрали первый город
@@ -488,7 +417,7 @@ export default class MainScene extends Phaser.Scene {
                         } else {
                             // ШАГ 2: Выбрали второй город
                             if (this.firstCityForRoute.id === cityData.id) {
-                                alert("Нельзя проложить путь в тот же самый город!");
+                                this.ui.showNotification("Нельзя проложить путь в тот же самый город!", 'error');
                                 return;
                             }
                             
@@ -585,417 +514,76 @@ export default class MainScene extends Phaser.Scene {
 
         this.routesData.cities.push(newCity);
         this.refreshMap(); // Метод для перерисовки всех городов
-        this.openEditor(newCity);
-    }
-
-    openEditor(cityData) {
-        // Показываем панель, если она вдруг была скрыта
-        document.getElementById('editor-panel').style.display = 'block';
-
-        // Заполняем поля данными из объекта города
-        document.getElementById('edit-city-id').value = cityData.id;
-        document.getElementById('edit-city-name').value = cityData.name;
-        document.getElementById('edit-city-population').value = cityData.population || 0;
-        document.getElementById('edit-city-desc').value = cityData.description || '';
-        
-        // Преобразуем массив товаров обратно в строку для редактирования
-        document.getElementById('edit-city-goods').value = (cityData.goods || []).join(', ');
-
-        // Добавим легкий визуальный эффект «мигания» панели, чтобы было ясно, что данные сменились
-        const panel = document.getElementById('editor-panel');
-        panel.style.borderColor = '#00FF00';
-        setTimeout(() => { panel.style.borderColor = '#4a6fa5'; }, 300);
-    }
-
-    async saveCityData() {
-        const id = parseInt(document.getElementById('edit-city-id').value);
-        const cityIndex = this.routesData.cities.findIndex(c => c.id === id);
-        
-        if (cityIndex !== -1) {
-            this.routesData.cities[cityIndex].name = document.getElementById('edit-city-name').value;
-            this.routesData.cities[cityIndex].population = parseInt(document.getElementById('edit-city-population').value) || 0;
-            this.routesData.cities[cityIndex].description = document.getElementById('edit-city-desc').value;
-            this.routesData.cities[cityIndex].goods = document.getElementById('edit-city-goods').value.split(',').map(s => s.trim());
-
-            // ОТПРАВКА НА СЕРВЕР
-            try {
-                const response = await fetch(`${window.location.origin}/api/save`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.routesData)
-                });
-                                
-                if (response.ok) {
-                    alert('Свиток обновлен и запечатан!');
-                    this.refreshMap();
-                }
-            } catch (err) {
-                console.error('Ошибка сохранения:', err);
-                alert('Магия не сработала. Сервер запущен?');
-            }
-        }
-    }
-
-    async deleteCityData() {
-        const id = parseInt(document.getElementById('edit-city-id').value);
-        if (!id) return;
-
-        const cityIndex = this.routesData.cities.findIndex(c => c.id === id);
-        
-        if (cityIndex === -1) {
-            alert("Город не найден в базе данных.");
-            return;
-        }
-
-        const cityName = this.routesData.cities[cityIndex].name;
-        
-        // Подтверждение удаления
-        if (!confirm(`Вы уверены, что хотите удалить город ${cityName}? Все торговые пути к нему будут уничтожены.`)) {
-            return;
-        }
-
-        // 1. Удаляем город из массива данных
-        this.routesData.cities.splice(cityIndex, 1);
-
-        // 2. Очищаем маршруты, которые вели в этот город или из него
-        this.routesData.routes = this.routesData.routes.filter(route => 
-            route.from !== id && route.to !== id
-        );
-
-        // 3. Сбрасываем состояние выбора в игре
-        this.selectedCity = null;
-        this.selectedRoute = null;
-
-        // 4. Обновляем UI (скрываем панели и чистим инфо)
-        document.getElementById('editor-panel').style.display = 'none';
-        document.getElementById('route-editor-panel').style.display = 'none';
-        document.getElementById('city-info-content').innerHTML = '<p>Город удален.</p>';
-
-        // 5. Визуальное обновление карты
-        this.refreshMap();   // Пересоздает спрайты городов
-        this.refreshScene(); // Перерисовывает пути и перезапускает караваны
-
-        // 6. Сохранение изменений на сервере
-        await this.saveDataToServer();
-        
-        console.log(`Город ${cityName} успешно удален.`);
+        this.ui.showCityEditor(newCity); 
     }
 
     refreshMap() {
-        // 1. Запоминаем ID текущего выбранного города, если он есть
-        const selectedId = this.selectedCity ? this.selectedCity.data.id : null;
+        const selectedId = this.selectedCity ? this.selectedCity.cityData.id : null;
 
-        // 2. Очищаем текущие спрайты и тексты
-        this.cities.forEach(c => {
-            if (c.sprite) c.sprite.destroy();
-            if (c.text) c.text.destroy();
-        });
+        // Теперь c — это сам объект City
+       if (this.cities) {
+            this.cities.forEach(city => {
+                if (city.destroy) city.destroy();
+            });
+        }
+
         this.cities = [];
-
-        // 3. Обнуляем ссылку на выбранный город перед пересозданием
         this.selectedCity = null;
 
-        // 4. Пересоздаем спрайты из обновленных данных
         this.createCities(this.routesData.cities);
 
-        // 5. Если до этого был выбран город, выбираем его снова (уже новый спрайт)
         if (selectedId) {
             const newCityData = this.routesData.cities.find(c => c.id === selectedId);
-            if (newCityData) {
-                this.selectCity(newCityData);
-            }
+            if (newCityData) this.selectCity(newCityData);
         }
     }
     
-    checkCityClick(screenX, screenY) {
-        // Преобразуем экранные координаты в мировые
-        const worldPoint = this.cameras.main.getWorldPoint(screenX, screenY);
-        
-        // Проверяем каждый город
-        for (const city of this.cities) {
-            const sprite = city.sprite;
-            const bounds = sprite.getBounds();
-            
-            // Учитываем масштаб спрайта
-            const scale = sprite.scaleX;
-            const width = sprite.width * scale;
-            const height = sprite.height * scale;
-            
-            // Создаем прямоугольник с учетом масштаба
-            const cityBounds = new Phaser.Geom.Rectangle(
-                sprite.x - width / 2,
-                sprite.y - height / 2,
-                width,
-                height
-            );
-            
-            // Проверяем, попал ли клик в город
-            if (cityBounds.contains(worldPoint.x, worldPoint.y)) {
-                return true;
-            }
-        }
-        
-        return false;
-    }
-    
-
     createCountries(countryData) {
         if (!countryData) return;
         
-        // Очистим старые объекты, если они были (для refreshMap)
+        // Очистим старые объекты, если они были
         if (this.countryObjects) {
             this.countryObjects.forEach(obj => obj.destroy());
         }
         this.countryObjects = [];
 
         countryData.forEach(data => {
-            const countryText = this.add.text(data.x, data.y, data.name, {
-                fontFamily: 'MyMedievalFont',
-                fontSize: data.fontSize || '40px',
-                fill: data.color || '#ff0000',
-                stroke: '#000000',
-                strokeThickness: 4
-            })
-            .setOrigin(0.5)
-            .setDepth(1)
-            .setAngle(data.angle || 0)
-            .setInteractive({ useHandCursor: true, draggable: true }) // Делаем перетаскиваемым
-            .setData('countryData', data);
-
-            // Клик по стране
-            countryText.on('pointerdown', (pointer) => {
-                if (this.isEditorMode) {
-                    this.openCountryEditor(data);
-                } else {
-                    // Показываем инфо о стране в левой панели
-                    this.updateCountryInfoPanel(data);
-                }
-                this.sound.play('city_click', { volume: window.gameVolume });
-            });
-
-            // Перетаскивание
-            countryText.on('drag', (pointer, dragX, dragY) => {
-                if (this.isEditorMode) {
-                    countryText.x = Math.round(dragX);
-                    countryText.y = Math.round(dragY);
-                    data.x = countryText.x;
-                    data.y = countryText.y;
-                }
-            });
-
-            this.countryObjects.push(countryText);
+            const country = new Country(this, data);
+            this.countryObjects.push(country);
         });
     }
 
-    
     createCities(cityData) {
-        cityData.forEach(city => {
-            // Создание спрайта города
-            const citySprite = this.add.sprite(city.x, city.y, 'city')
-                .setInteractive({ useHandCursor: true })
-                .setScale(this.cityScale)
-                .setDepth(10)
-                .setData('cityId', city.id);
-            
-            // Анимация при наведении
-            citySprite.on('pointerover', () => {
-                this.tweens.add({
-                    targets: citySprite,
-                    scale: this.cityScale + 0.05,
-                    duration: 200
-                });
-                if (this.selectedCity?.data.id !== city.id) {
-                    citySprite.postFX.addGlow(0x4a6fa5, 2); // Слабое свечение
-                }
-            });
-            
-            citySprite.on('pointerout', () => {
-                if (this.selectedCity?.data.id !== city.id) {
-                    this.tweens.add({
-                        targets: citySprite,
-                        scale: this.cityScale,
-                        duration: 200
-                    });
-                    citySprite.postFX.clear(); // Убираем свечение при наведении
-                }
-            });
-            
-            // Обработчик клика
-            citySprite.on('pointerdown', (pointer) => {
-                // Останавливаем распространение события, чтобы не срабатывало перетаскивание
-                pointer.event.stopPropagation();
-                this.selectCity(city);
-                this.sound.play('city_click', { volume: window.gameVolume });
-            });
-            
-            // Текст с названием города
-            const cityName = this.add.text(city.x, city.y - 30, city.name, {
-                font: 'bold 18px Arial',
-                fill: '#aa7fFF',
-                stroke: '#000000',
-                strokeThickness: 4,
-                shadow: {
-                    offsetX: 2,
-                    offsetY: 2,
-                    color: '#000000',
-                    blur: 2,
-                    fill: true
-                }
-            }).setOrigin(0.5).setDepth(100);
-            
-            this.cities.push({
-                sprite: citySprite,
-                text: cityName,
-                data: city
-            });
+        cityData.forEach(data => {
+            const city = new City(this, data);
+            this.cities.push(city); // Просто пушим сам объект города
         });
     }
     
     selectCity(cityData) {
-
-         // Если объект спрайта уже уничтожен, просто сбрасываем ссылку
-        if (this.selectedCity && (!this.selectedCity.sprite || !this.selectedCity.sprite.active)) {
-            this.selectedCity = null;
-        }
-
-        if (this.expandInfoPanel) this.expandInfoPanel();
-
-        console.log('Выбран город:', cityData.name);
-        
-        // 1. Сброс предыдущего выделения
+        // 1. Логика Phaser (спрайты и выделение)
         if (this.selectedCity) {
-            // Возвращаем масштаб
-            this.tweens.add({
-                targets: this.selectedCity.sprite,
-                scale: this.cityScale,
-                duration: 200
-            });
-            
-            // Убираем все спецэффекты (свечение)
-            this.selectedCity.sprite.postFX.clear();
-            // Останавливаем анимацию пульсации, если она была привязана к спрайту
-            this.tweens.killTweensOf(this.selectedCity.sprite.postFX); 
+            this.selectedCity.setSelected(false);
         }
         
-        // 2. Поиск нового города
-        const city = this.cities.find(c => c.data.id === cityData.id);
+        const city = this.cities.find(c => c.cityData.id === cityData.id);
         if (!city) return;
         
         this.selectedCity = city;
+        this.selectedCity.setSelected(true);
 
-        // 3. Визуальные эффекты для выбранного города
-        
-        // Увеличиваем масштаб
-        this.tweens.add({
-            targets: city.sprite,
-            scale: this.cityScale + 0.07,
-            duration: 300,
-            ease: 'Back.easeOut'
-        });
+        // 2. Логика UI (теперь через менеджер)
+        // Метод updateCityInfo сам внутри вызовет expandInfoPanel, так что здесь это не нужно
+        this.ui.updateCityInfo(city.cityData, this.routes);
 
-        // ДОБАВЛЯЕМ СИНЕВАТОЕ СВЕЧЕНИЕ (Glow)
-        // аргументы: (цвет, внешняя сила, внутренняя сила, использование шейдера, шаг, итерации)
-        const glowEffect = city.sprite.postFX.addGlow(0x4a6fa5, 4, 0, false, 0.1, 12);
-        
-        // 4. Анимация пульсации свечения
-        this.tweens.add({
-            targets: glowEffect,
-            outerStrength: 10, // Сила свечения будет меняться от 4 до 10
-            duration: 1000,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.easeInOut'
-        });
-
-        // Обновление DOM-панели
-        this.updateDomInfoPanel(city.data);
-        
-        // Подсветка маршрутов
-        this.highlightRoutes(city.data.id);
-
-        // Если мы в режиме редактора — заполняем правую панель
+        // Если включен режим мастера — открываем редактор через UI менеджер
         if (this.isEditorMode) {
-            this.openEditor(city.data);
+            this.ui.showCityEditor(city.cityData);
         }
-        
-        // Плавное перемещение камеры
-        this.cameras.main.pan(city.sprite.x, city.sprite.y, 800, 'Power2');
-    }
-    
-    updateDomInfoPanel(cityData) {
-        const contentElement = document.getElementById('city-info-content');
-        if (!contentElement) {
-            console.error('Элемент #city-info-content не найден');
-            return;
-        }
-        
-        // Получаем маршруты из/в этот город
-        const connectedRoutes = this.routesData.routes.filter(route => 
-            route.from === cityData.id || route.to === cityData.id
-        );
-        
-        // Формируем HTML для товаров
-        const goodsHTML = cityData.goods && cityData.goods.length > 0
-            ? `<div class="goods-list">${cityData.goods.map(good => 
-                `<span class="good-tag">${good}</span>`).join('')}</div>`
-            : '<span>Нет товаров</span>';
-        
-        // Формируем HTML для маршрутов
-        const routesHTML = connectedRoutes.length > 0
-            ? connectedRoutes.map(route => {
-                const targetCityId = route.from === cityData.id ? route.to : route.from;
-                const targetCity = this.routesData.cities.find(c => c.id === targetCityId);
-                const direction = route.from === cityData.id ? '→' : '←';
-                
-                return `
-                    <div class="route-item" 
-                        onclick="window.gameScene.selectRouteById(${route.id})" 
-                        style="cursor: pointer; transition: background 0.2s;"
-                        onmouseover="this.style.background='rgba(255, 153, 0, 0.3)'"
-                        onmouseout="this.style.background='rgba(255, 153, 0, 0.1)'">
-                        <strong>${direction} ${targetCity?.name || 'Неизвестный город'}</strong><br>
-                        <small>${route.name || (route.type === 'water' ? 'Морской путь' : 'Тракт')}</small><br>
-                        <small>Дистанция: ${route.distance || 0} км, Длительность: ${route.calculatedDuration || 0} дн.</small>
-                    </div>
-                `;
-            }).join('')
-            : '<p>Нет активных маршрутов</p>';
 
-        const populationFormatted = typeof cityData.population === 'number' 
-            ? cityData.population.toLocaleString('ru-RU') + ' жителей'
-            : (cityData.population || 'Нет данных');
-        
-        let debugInfo = '';
-        //if (this.isEditorMode === true) {
-            debugInfo = `
-                <div class="city-property">id: ${cityData.id}</div>
-                <div class="city-property">x: ${cityData.x}</div>
-                <div class="city-property">y: ${cityData.y}</div>
-            `;
-        //}    
-
-        // Обновляем содержимое DOM-элемента
-        contentElement.innerHTML = `
-            <div class="city-property">Город: <strong>${cityData.name}</strong></div>
-            <div class="city-property">Описание: ${cityData.description || 'Нет описания'}</div>
-            <div class="city-property">Население: ${populationFormatted}</div>
-            <div class="city-property">Товары: ${goodsHTML}</div>
-            <div class="city-property">Склад: ${cityData.storage || '0'} единиц</div>
-            <div class="city-property">Активные маршруты (${connectedRoutes.length}):</div>
-            ${debugInfo}
-            ${routesHTML}
-        `;
-        
-        // Добавляем эффект выделения панели
-        const panel = document.getElementById('city-info-panel');
-        panel.style.borderColor = '#00FF00';
-        panel.style.boxShadow = '0 0 15px rgba(0, 255, 0, 0.3)';
-        
-        // Через секунду убираем эффект
-        setTimeout(() => {
-            panel.style.borderColor = '#4a6fa5';
-            panel.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
-        }, 1000);
+        // 3. Логика Phaser (камера и маршруты)
+        this.highlightRoutes(city.cityData.id);
+        this.cameras.main.pan(city.x, city.y, 800, 'Power2');
     }
     
     updateSpriteOrientation(sprite, fromPoint, toPoint) {
@@ -1012,27 +600,81 @@ export default class MainScene extends Phaser.Scene {
             sprite.setFlipY(false);
         }
     }
-    
-    getAngle(x1, y1, x2, y2) {
-        const angle = Phaser.Math.RadToDeg(Math.atan2(y2 - y1, x2 - x1));
-        return angle;
+
+    async saveCityData() {
+        const id = parseInt(document.getElementById('edit-city-id').value);
+        const cityObj = this.cities.find(c => c.cityData.id === id);
+        
+        if (cityObj) {
+            const data = cityObj.cityData;
+            
+            // Обновляем данные из полей ввода
+            data.name = document.getElementById('edit-city-name').value;
+            data.population = parseInt(document.getElementById('edit-city-population').value) || 0;
+            data.description = document.getElementById('edit-city-desc').value;
+            data.goods = document.getElementById('edit-city-goods').value.split(',').map(s => s.trim());
+            data.country_id = parseInt(document.getElementById('edit-city-country').value);
+
+            // ТОЧЕЧНОЕ СОХРАНЕНИЕ
+            const success = await this.dataService.saveCity(data);
+            if (success) {
+                this.ui.showNotification(`Город ${data.name} сохранен`, 'success');
+                this.refreshMap(); 
+            }
+        }
     }
 
-    async saveDataToServer() {
-        const dataToSave = {
-            cities: this.routesData.cities,
-            routes: this.routesData.routes,
-            countries: this.routesData.countries
-        };
+    async deleteCityData() {
+        const id = parseInt(document.getElementById('edit-city-id').value);
+        if (!id) return;
+
+        // 1. Сначала спрашиваем подтверждение
+        if (!confirm('Удаление города приведет к уничтожению всех связанных торговых путей. Продолжить?')) return;
 
         try {
-            await fetch(`${window.location.origin}/api/save`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataToSave)
-            });
+            // 2. Находим все маршруты, связанные с этим городом
+            const routesToDelete = this.routesData.routes.filter(r => 
+                r.from_id === id || r.to_id === id
+            );
+
+            // 3. Удаляем маршруты из базы данных (параллельно)
+            if (routesToDelete.length > 0) {
+                this.ui.showNotification(`Удаление связанных путей (${routesToDelete.length})...`, 'info');
+                
+                // Promise.all запускает все запросы сразу и ждет их завершения
+                await Promise.all(routesToDelete.map(route => 
+                    this.dataService.deleteRoute(route.id)
+                ));
+
+                // Чистим маршруты в локальных данных
+                this.routesData.routes = this.routesData.routes.filter(r => 
+                    r.from_id !== id && r.to_id !== id
+                );
+            }
+
+            // 4. Удаляем сам город из базы данных
+            const citySuccess = await this.dataService.deleteCity(id);
+
+            if (citySuccess) {
+                // Удаляем город из локальных данных
+                this.routesData.cities = this.routesData.cities.filter(c => c.id !== id);
+
+                // 5. Сбрасываем выделение и скрываем редакторы
+                this.selectedCity = null;
+                this.selectedRoute = null;
+
+                // 6. ПОЛНОЕ ОБНОВЛЕНИЕ ВИЗУАЛА
+                this.refreshMap();   // Перерисовать города
+                this.refreshScene(); // Перерисовать пути и караваны (удалит лишние линии)
+
+                this.ui.showNotification('Город и связанные пути удалены', 'success');
+            } else {
+                this.ui.showNotification('Ошибка при удалении города', 'error');
+            }
+
         } catch (err) {
-            console.error("Ошибка сохранения:", err);
+            console.error("Ошибка при полном удалении города:", err);
+            this.ui.showNotification('Произошла ошибка при очистке данных', 'error');
         }
     }
     
@@ -1040,11 +682,12 @@ export default class MainScene extends Phaser.Scene {
         if (this.highlightGraphics) this.highlightGraphics.clear();
         else this.highlightGraphics = this.add.graphics().setDepth(3);
 
-        const connected = this.routesData.routes.filter(r => r.from === cityId || r.to === cityId);
+        const connected = this.routes.filter(r => 
+        r.routeData.from_id === cityId || r.routeData.to_id === cityId
+    );
         
         connected.forEach(route => {
-            this.highlightGraphics.lineStyle(3, 0x00ff00, 0.8);
-            route.curve.draw(this.highlightGraphics);
+            route.draw(this.highlightGraphics, true);
         });
     }
     
@@ -1111,97 +754,65 @@ export default class MainScene extends Phaser.Scene {
     }
 
     refreshScene() {
-        // 1. Останавливаем и удаляем все текущие караваны
-        if (this.caravans && this.caravans.length > 0) {
-            this.caravans.forEach(item => {
-                if (item.tween) {
-                    item.tween.stop();    // Полностью останавливаем анимацию
-                    item.tween.remove();  // Удаляем её из менеджера твинов
-                }
-                if (item.sprite) {
-                    item.sprite.destroy(); // Удаляем спрайт с экрана
-                }
-            });
+        // 1. Уничтожаем все старые маршруты (они сами почистят свои караваны)
+        if (this.routes) {
+            this.routes.forEach(r => r.destroy());
         }
         
-        // 2. Очищаем массив полностью
-        this.caravans = [];
+        // 2. Создаем их заново из актуальных данных
+        this.routes = this.routesData.routes.map(data => new Route(this, data));
 
-        // 3. Перерисовываем линии
+        // 3. Перерисовываем
         this.drawAllRoutes();
 
-        // 4. Создаем новых последователей
+        // 4. Запускаем караваны
         this.createFollowers();
     }
 
     selectRouteById(id) {
-        const route = this.routesData.routes.find(r => r.id === id);
-        if (!route) return;
+        const routeObj = this.routes.find(r => r.routeData.id === id);
+        if (!routeObj) return;
         
-        // Сохраняем выбранный маршрут
-        this.selectedRoute = route;
+        this.selectedRoute = routeObj.routeData;
 
-        // ЕСЛИ МЫ В РЕЖИМЕ РЕДАКТОРА
         if (this.isEditorMode) {
-            document.getElementById('route-editor-panel').style.display = 'block';
-            document.getElementById('edit-route-id').value = route.id;
-            document.getElementById('edit-route-type').value = route.type;
-            document.getElementById('edit-route-coeff').value = route.speedCoeff || 1.0;
-            document.getElementById('edit-route-count').value = route.unitCount !== undefined ? route.unitCount : (route.type === 'water' ? 1 : 3);
-            
-            this.showRouteHandles(route); // Показываем синие точки
-        } else {
-            // Если в обычном режиме - просто подсвечиваем на карте (без точек)
-            document.getElementById('route-editor-panel').style.display = 'none';
-            this.editHandles.forEach(h => h.destroy());
-            this.editHandles = [];
+            this.ui.showRouteEditor(routeObj.routeData);
+            this.showRouteHandles(routeObj.routeData); 
         }
-
-        this.drawAllRoutes(); // Перерисовываем для подсветки
-    }
-
-    openCountryEditor(data) {
-        document.getElementById('country-editor-panel').style.display = 'block';
-        document.getElementById('editor-panel').style.display = 'none';
-        document.getElementById('route-editor-panel').style.display = 'none';
-
-        document.getElementById('edit-country-id').value = data.id;
-        document.getElementById('edit-country-name').value = data.name;
-        document.getElementById('edit-country-race').value = data.race || '';
-        document.getElementById('edit-country-religion').value = data.religion || '';
-        document.getElementById('edit-country-pop').value = data.population || 0;
-        
-        // Устанавливаем значения ползунков
-        const culture = data.culture || 0;
-        const militancy = data.militancy || 0;
-        
-        document.getElementById('edit-country-culture').value = culture;
-        document.getElementById('val-culture').innerText = culture; // Обновляем текст
-        
-        document.getElementById('edit-country-militancy').value = militancy;
-        document.getElementById('val-militancy').innerText = militancy; // Обновляем текст
-
-        const angle = data.angle || 0;
-        document.getElementById('edit-country-angle').value = angle;
-        document.getElementById('val-angle').innerText = angle;
+        this.drawAllRoutes(); 
     }
 
     async saveCountryData() {
         const id = parseInt(document.getElementById('edit-country-id').value);
-        const country = this.routesData.countries.find(c => c.id === id);
+        // Ищем объект данных в локальном хранилище
+        const countryData = this.routesData.countries.find(c => c.id === id);
         
-        if (country) {
-            country.name = document.getElementById('edit-country-name').value;
-            country.race = document.getElementById('edit-country-race').value;
-            country.religion = document.getElementById('edit-country-religion').value;
-            country.population = parseInt(document.getElementById('edit-country-pop').value);
-            country.culture = parseInt(document.getElementById('edit-country-culture').value);
-            country.militancy = parseInt(document.getElementById('edit-country-militancy').value);
-            country.angle = parseInt(document.getElementById('edit-country-angle').value) || 0;
+        if (countryData) {
+            // 1. Обновляем локальный объект данными из полей ввода
+            countryData.name = document.getElementById('edit-country-name').value;
+            countryData.race = document.getElementById('edit-country-race').value;
+            countryData.religion = document.getElementById('edit-country-religion').value;
+            countryData.population = parseInt(document.getElementById('edit-country-pop').value) || 0;
+            countryData.culture = parseInt(document.getElementById('edit-country-culture').value) || 0;
+            countryData.militancy = parseInt(document.getElementById('edit-country-militancy').value) || 0;
+            countryData.angle = parseInt(document.getElementById('edit-country-angle').value) || 0;
 
-            this.createCountries(this.routesData.countries); // Перерисовываем надписи
-            await this.saveDataToServer();
-            alert('Данные страны сохранены!');
+            try {
+                // 2. Отправляем на сервер только данные этой страны
+                const success = await this.dataService.saveCountry(countryData);
+
+                if (success) {
+                    // 3. Перерисовываем надписи на карте, чтобы отразить изменения (имя, наклон)
+                    this.createCountries(this.routesData.countries); 
+                    
+                    this.ui.showNotification(`Держава ${countryData.name} успешно сохранена`, 'success');
+                } else {
+                    this.ui.showNotification('Ошибка сохранения данных страны', 'error');
+                }
+            } catch (err) {
+                console.error("Ошибка при сохранении страны:", err);
+                this.ui.showNotification('Сервер не отвечает', 'error');
+            }
         }
     }
 
@@ -1224,22 +835,7 @@ export default class MainScene extends Phaser.Scene {
 
         this.routesData.countries.push(newCountry);
         this.createCountries(this.routesData.countries);
-        this.openCountryEditor(newCountry);
-    }
-
-    updateCountryInfoPanel(data) {
-        const content = document.getElementById('city-info-content');
-        content.innerHTML = `
-            <div class="city-property">Страна: <strong>${data.name}</strong></div>
-            <div class="city-property">Основная раса: ${data.race || 'Неизвестно'}</div>
-            <div class="city-property">Религия: ${data.religion || 'Нет'}</div>
-            <div class="city-property">Население: ${data.population?.toLocaleString() || 0} чел.</div>
-            <hr>
-            <div class="city-property">Культура: ${data.culture || 0}/3</div>
-            <div class="city-property">Воинственность: ${data.militancy || 0}/10</div>
-            <p><small>Кликните по городу этой страны для деталей</small></p>
-        `;
-        if (this.expandInfoPanel) this.expandInfoPanel();
+        this.ui.showCountryEditor(newCountry);
     }
 
     createNewRoute(fromId, toId) {
@@ -1248,8 +844,8 @@ export default class MainScene extends Phaser.Scene {
 
         const newRoute = {
             id: newId,
-            from: fromId,
-            to: toId,
+            from_id: fromId,
+            to_id: toId,
             type: "track",
             points: [],
             speedCoeff: 1.0,
@@ -1265,7 +861,7 @@ export default class MainScene extends Phaser.Scene {
         this.selectRouteById(newId);
         
         // Сохраняем на сервер
-        this.saveDataToServer();
+        this.dataService.saveRoute(newRoute);
         
         console.log(`Путь ID:${newId} создан успешно.`);
     }

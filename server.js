@@ -37,7 +37,7 @@ db.serialize(() => {
 app.get('/api/load', (req, res) => {
     const data = { cities: [], routes: [], countries: [] };
     
-    db.all("SELECT * FROM countries", [], (err, rows) => {
+    db.all("SELECT * FROM countries order by name", [], (err, rows) => {
         data.countries = rows;
         db.all("SELECT * FROM cities", [], (err, rows) => {
             // Преобразуем goods обратно в массив из строки
@@ -82,4 +82,55 @@ app.post('/api/save', (req, res) => {
     });
 });
 
-app.listen(PORT, () => console.log(`Сервер БД запущен: http://localhost:${PORT}`));
+app.post('/api/cities', (req, res) => {
+    const c = req.body;
+    const stmt = db.prepare("INSERT OR REPLACE INTO cities (id, name, x, y, description, population, storage, goods, country_id) VALUES (?,?,?,?,?,?,?,?,?)");
+    stmt.run(c.id, c.name, c.x, c.y, c.description, c.population, c.storage, c.goods.join(','), c.country_id, (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "City saved" });
+    });
+    stmt.finalize();
+});
+
+// Удалить город
+app.delete('/api/cities/:id', (req, res) => {
+    db.run("DELETE FROM cities WHERE id = ?", req.params.id, (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "City deleted" });
+    });
+});
+
+// Обновить или создать маршрут
+app.post('/api/routes', (req, res) => {
+    const r = req.body;
+    const stmt = db.prepare("INSERT OR REPLACE INTO routes (id, from_id, to_id, type, points, speedCoeff, unitCount) VALUES (?,?,?,?,?,?,?)");
+    stmt.run(r.id, r.from_id, r.to_id, r.type, JSON.stringify(r.points), r.speedCoeff, r.unitCount, (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "Route saved" });
+    });
+    stmt.finalize();
+});
+
+// Удалить маршрут
+app.delete('/api/routes/:id', (req, res) => {
+    db.run("DELETE FROM routes WHERE id = ?", req.params.id, (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "Route deleted" });
+    });
+});
+
+// Аналогично для стран (Countries)
+app.post('/api/countries', (req, res) => {
+    const c = req.body;
+    const stmt = db.prepare("INSERT OR REPLACE INTO countries (id, name, x, y, angle, race, religion, population, culture, militancy) VALUES (?,?,?,?,?,?,?,?,?,?)");
+    stmt.run(c.id, c.name, c.x, c.y, c.angle, c.race, c.religion, c.population, c.culture, c.militancy, (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "Country saved" });
+    });
+    stmt.finalize();
+});
+
+const port = 8080;
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Сервер БД запущен: http://0.0.0.0:${PORT}`)
+});

@@ -4,146 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Мир Противень</title>
-    <style>
-        /* ОБЩИЙ СТИЛЬ ДЛЯ ВСЕХ ПАНЕЛЕЙ */
-        .ui-panel {
-            background: rgba(0, 0, 0, 0.85);
-            border: 2px solid #4a6fa5;
-            border-radius: 10px;
-            color: white;
-            backdrop-filter: blur(5px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-            padding: 15px;
-            font-family: 'Arial', sans-serif;
-            z-index: 1000;
-        }
-
-        /* ОБЩИЙ СТИЛЬ ДЛЯ КНОПОК */
-        button {
-            background: #4a6fa5;
-            color: white;
-            border: none;
-            padding: 8px 15px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: background 0.3s, transform 0.1s;
-            font-family: 'Arial', sans-serif;
-        }
-
-        button:hover {
-            background: #5a8fdf;
-        }
-
-        button:active {
-            transform: scale(0.98);
-        }
-
-        /* Позиционирование кнопки Режима Мастера */
-        #editor-toggle-container {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            width: 350px;
-            z-index: 1001;
-        }
-
-        #toggle-editor-btn {
-            width: 100%;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        /* Позиционирование панели информации */
-        #city-info-panel {
-            position: fixed;
-            top: 75px; /* Сразу под кнопкой */
-            left: 20px;
-            width: 350px;
-            max-height: 70vh;
-            overflow-y: auto;
-        }
-
-        /* Позиционирование панели редактирования (справа) */
-        #editor-panel {
-            display: none;
-            position: fixed;
-            right: 20px;
-            top: 150px; /* Чтобы не перекрывать управление скоростью */
-            width: 300px;
-        }
-
-        #editor-panel h3 {
-            margin-top: 0;
-            color: #4a6fa5;
-            border-bottom: 1px solid #4a6fa5;
-        }
-
-        #editor-panel input, #editor-panel textarea {
-            width: 100%;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid #4a6fa5;
-            color: white;
-            padding: 8px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            box-sizing: border-box;
-        }
-
-        /* Стили из вашего оригинала для контента */
-        #city-info-content {
-            font-size: 14px;
-            line-height: 1.4;
-        }
-        #city-info-panel h3 { margin-top: 0; color: #4a6fa5; border-bottom: 1px solid #4a6fa5; padding-bottom: 8px; }
-        .city-property { margin: 8px 0; padding-left: 5px; border-left: 3px solid #4a6fa5; }
-        .goods-list { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
-        .good-tag { background: rgba(74, 111, 165, 0.3); padding: 2px 8px; border-radius: 10px; font-size: 12px; }
-        .route-item {
-            background: rgba(255, 153, 0, 0.1);
-            margin: 5px 0;
-            padding: 5px;
-            border-radius: 5px;
-            border-left: 3px solid #ff9900;
-        }
-
-         @font-face {
-            font-family: 'MyMedievalFont'; /* Имя, которое мы будем использовать в коде */
-            src: url('assets/fonts/Behrens Modern.ttf') format('truetype');
-            font-weight: normal;
-            font-style: normal;
-        }
-
-        /* Скрытый элемент, который заставит браузер СРАЗУ начать загрузку шрифта */
-        .font-loader {
-            font-family: 'MyMedievalFont';
-            position: absolute;
-            visibility: hidden;
-            height: 0;
-            width: 0;
-        }
-
-        .editor-row {
-            margin-bottom: 12px;
-        }
-        .editor-row label {
-            display: block;
-            margin-bottom: 4px;
-            font-size: 0.9em;
-            color: #ccc;
-        }
-        .slider-group {
-            background: rgba(255,255,255,0.05);
-            padding: 8px;
-            border-radius: 5px;
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="font-loader">Загрузка шрифта...</div>
     <div id="game-container"></div>
     
-    <div id="editor-toggle-container">
+    <div id="editor-toggle-container" >
         <button id="toggle-editor-btn">🛠️ Режим Мастера</button>
         <div id="editor-sub-btns" style="display: none; flex-direction: column; gap: 5px; margin-top: 5px;">
             <button id="add-city-btn" style="background: #e67e22; font-weight: bold;">🏘️ Новый город (клик на карту)</button>
@@ -201,6 +68,11 @@
         
         <label>Описание:</label>
         <textarea id="edit-city-desc" rows="3"></textarea>
+
+        <label>Держава:</label>
+        <select id="edit-city-country" style="width: 100%; background: rgba(255, 255, 255, 0.1); color: white; border: 1px solid #4a6fa5; padding: 8px; border-radius: 4px; margin-bottom: 10px;">
+            <option value="0">Независимый / Ничей</option>
+        </select>
         
         <label>Население (чел.):</label>
         <input type="number" id="edit-city-population">
