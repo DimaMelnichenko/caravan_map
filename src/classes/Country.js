@@ -39,6 +39,12 @@ export default class Country extends Phaser.GameObjects.Text {
         this.on('pointerdown', (pointer) => {
             pointer.event.stopPropagation();
 
+            this.scene.viewingType = 'country'; // Устанавливаем фокус на страну
+    
+            if (this.scene.selectedCity) {
+                this.scene.selectedCity.setSelected(false);
+            }
+
             if (this.scene.isEditorMode) {
                 this.scene.ui.showCountryEditor(this.countryData);
             } else {

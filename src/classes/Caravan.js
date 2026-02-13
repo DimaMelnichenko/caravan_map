@@ -2,6 +2,10 @@ export default class Caravan extends Phaser.GameObjects.Container {
     constructor(scene, x, y, type, routeData) {
         super(scene, x, y);
 
+        this.cargoAmount = 0;
+        this.cargoItem = null;
+        this.selectedItemID = null;
+
         this.scene = scene;
         this.routeData = routeData;
         this.type = type;
@@ -57,23 +61,50 @@ export default class Caravan extends Phaser.GameObjects.Container {
     }
 
     pickRandomGoods() {
-        // Ищем город отправления, чтобы узнать, какие там есть товары
-        const startCity = this.scene.cities.find(c => c.cityData.id === this.routeData.from_id);
+        if (!this.scene.routesData) return;
+
+        const economy = this.scene.routesData.cityEconomy;
+        const items = this.scene.routesData.items;
         
-        if (startCity && startCity.cityData.goods && startCity.cityData.goods.length > 0) {
-            // Фильтруем пустые строки, если они есть
-            const validGoods = startCity.cityData.goods.filter(g => g.trim() !== "");
+        // Принудительно к числу для надежности сравнения
+        const fromId = Number(this.routeData.from_id);
+        const toId = Number(this.routeData.to_id);
+
+        // 1. Находим, что производит город отправления
+        const production = economy.filter(e => Number(e.city_id) === fromId && e.type === 'production');
+        
+        // 2. Находим, что потребляет город назначения
+        const consumption = economy.filter(e => Number(e.city_id) === toId && e.type === 'consumption');
+
+        // 3. Ищем товары, которые производятся в А И потребляются в Б (идеальный путь)
+        const tradeMatches = production.filter(p => 
+            consumption.some(c => Number(c.item_id) === Number(p.item_id))
+        );
+
+        let selectedItem = null;
+
+        if (tradeMatches.length > 0) {
+            const match = tradeMatches[Math.floor(Math.random() * tradeMatches.length)];
+            selectedItem = items.find(i => Number(i.id) === Number(match.item_id));
+        } else if (production.length > 0) {
+            const prod = production[Math.floor(Math.random() * production.length)];
+            selectedItem = items.find(i => Number(i.id) === Number(prod.item_id));
+        }
+
+        // --- ВОТ ТУТ МЫ ДОБАВЛЯЕМ ЛОГИЧЕСКУЮ ПРИВЯЗКУ ---
+        if (selectedItem) {
+            this.selectedItemID = Number(selectedItem.id); // Запоминаем ID для погрузки
+            this.currentGood = selectedItem.name;
             
-            if (validGoods.length > 0) {
-                this.currentGood = validGoods[Math.floor(Math.random() * validGoods.length)];
-                
-                // Проверяем, загружена ли иконка с именем 'icon_Товар'
-                const iconKey = 'icon_' + this.currentGood;
-                if (this.scene.textures.exists(iconKey)) {
-                    this.goodsIcon.setTexture(iconKey);
-                    this.goodsIcon.setVisible(true);
-                }
+            // Визуал
+            const iconKey = selectedItem.icon;
+            if (this.scene.textures.exists(iconKey)) {
+                this.goodsIcon.setTexture(iconKey);
             }
+        } else {
+            this.selectedItemID = null;
+            this.currentGood = "Пусто";
+            this.goodsIcon.setVisible(false);
         }
     }
 
@@ -103,6 +134,8 @@ export default class Caravan extends Phaser.GameObjects.Container {
                 to: endCity?.cityData.name,
                 good: this.currentGood || 'Провизия'
             };
+
+            this.scene.viewingType = 'caravan';
             
             this.scene.ui.showCaravanInfo(info);
         });
@@ -121,6 +154,12 @@ export default class Caravan extends Phaser.GameObjects.Container {
             this.baseSprite.setFlipY(false);
             this.goodsIcon.setFlipY(false);
             this.goodsIcon.setY(-20);
+        }
+    }
+
+    updateCargoVisual(isVisible) {
+        if (this.goodsIcon) {
+            this.goodsIcon.setVisible(isVisible);
         }
     }
 }

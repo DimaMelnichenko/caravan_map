@@ -184,3 +184,77 @@ select:focus {
     border-color: #5a8fdf;
     box-shadow: 0 0 5px rgba(74, 111, 165, 0.5);
 }
+
+.economy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 5px;
+}
+
+.economy-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.economy-row select {
+    flex: 2;
+    padding: 5px;
+}
+
+.economy-row input {
+    flex: 1;
+    padding: 5px;
+    margin-bottom: 0 !important; /* Сбрасываем нижний отступ из общего стиля */
+}
+
+.small-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: #28a745;
+}
+
+.remove-btn {
+    background: #dc3545;
+    padding: 4px 8px;
+}
+
+
+/* Теги для информационной панели */
+.economy-info-block {
+    margin-top: 10px;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+}
+
+.economy-info-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #4a6fa5;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.eco-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-right: 4px;
+    margin-bottom: 4px;
+    border: 1px solid transparent;
+}
+
+.eco-tag.production {
+    background: rgba(40, 167, 69, 0.2);
+    border-color: #28a745;
+    color: #b7ffc9;
+}
+
+.eco-tag.consumption {
+    background: rgba(220, 53, 69, 0.2);
+    border-color: #dc3545;
+    color: #ffb7b7;
+}

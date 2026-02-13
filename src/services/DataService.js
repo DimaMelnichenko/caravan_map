@@ -54,6 +54,17 @@ export default class DataService {
         return response.ok;
     }
 
+    async saveCityEconomy(cityId, economyArray) {
+        return this.post('/api/city-economy', {
+            city_id: cityId,
+            economy: economyArray
+        });
+    }
+
+    async saveAllInventory(inventory) {
+        return this.post('/api/save-inventory', { inventory });
+    }
+
     // Специфические методы
     saveCity(city) { return this.post('/api/cities', city); }
     deleteCity(id) { return this.delete(`/api/cities/${id}`); }

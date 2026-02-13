@@ -97,6 +97,15 @@ export default class Route {
                 duration: travelTimeMs / (window.gameSpeed || 1),
                 repeat: -1,
                 delay: i * (spacing * (travelTimeMs / (window.gameSpeed || 1))),
+                // СРАБАТЫВАЕТ ПРИ КАЖДОМ ЗАПУСКЕ (ПЕРВАЯ ЗАГРУЗКА)
+                onStart: () => {
+                    this.transferGoods(caravanSprite);
+                },
+                // СРАБАТЫВАЕТ, КОГДА КАРАВАН ЗАКОНЧИЛ ПУТЬ И НАЧИНАЕТ СНАЧАЛА
+                onRepeat: () => {
+                    // Каждый следующий круг — разгружаем то, что привезли, и грузим новое
+                    this.transferGoods(caravanSprite);
+                },
                 onUpdate: () => {
                     this.curve.getPointAt(follower.t, follower.vec);
                     caravanSprite.setPosition(follower.vec.x, follower.vec.y);
@@ -108,6 +117,81 @@ export default class Route {
             });
 
             this.caravans.push({ sprite: caravanSprite, tween: tween });
+        }
+    }
+
+    transferGoods(caravan) {
+        if (!this.scene.routesData) return;
+        
+        const inv = this.scene.routesData.cityInventory;
+        const items = this.scene.routesData.items;
+
+        // Приводим ID к числам, чтобы избежать ошибок "1" !== 1
+        const toCityId = Number(this.routeData.to_id);
+        const fromCityId = Number(this.routeData.from_id);
+
+        // --- 1. РАЗГРУЗКА ---
+        if (caravan.cargoItem && caravan.cargoAmount > 0) {
+            const itemId = Number(caravan.cargoItem.id);
+            
+            let destInv = inv.find(i => Number(i.city_id) === toCityId && Number(i.item_id) === itemId);
+            
+            if (!destInv) {
+                destInv = { city_id: toCityId, item_id: itemId, amount: 0 };
+                inv.push(destInv);
+            }
+            
+            destInv.amount += caravan.cargoAmount;
+            
+            console.log(`📦 [ДОСТАВКА] Город ${toCityId} получил ${caravan.cargoAmount} ед. ${caravan.cargoItem.name}`);
+            
+            // Очищаем данные каравана
+            caravan.cargoAmount = 0;
+            caravan.cargoItem = null;
+            caravan.updateCargoVisual(false);
+
+            // ОБНОВЛЯЕМ UI СРАЗУ, чтобы увидеть результат
+            if (this.scene.selectedCity && 
+                this.scene.viewingType === 'city' && 
+                Number(this.scene.selectedCity.cityData.id) === toCityId) {
+                this.scene.ui.updateCityInfo(this.scene.selectedCity.cityData, this.scene.routes);
+            }
+        }
+
+        // --- 2. ПОГРУЗКА ---
+        caravan.pickRandomGoods(); 
+        
+        if (caravan.selectedItemID) {
+            // Ищем товар на складе города отправления
+            let sourceInv = inv.find(i => 
+                Number(i.city_id) === Number(this.routeData.from_id) && 
+                Number(i.item_id) === Number(caravan.selectedItemID)
+            );
+            
+            const amountToTake = 10; // Сколько единиц берет один караван
+
+            if (sourceInv && sourceInv.amount >= amountToTake) {
+                // ФИЗИЧЕСКИ ЗАБИРАЕМ СО СКЛАДА
+                sourceInv.amount -= amountToTake;
+                
+                // ЗАПИСЫВАЕМ В КАРАВАН (чтобы он мог это выгрузить потом)
+                caravan.cargoAmount = amountToTake;
+                caravan.cargoItem = this.scene.routesData.items.find(it => Number(it.id) === Number(caravan.selectedItemID));
+                
+                caravan.updateCargoVisual(true);
+                console.log(`🛒 Город ${this.routeData.from_id} отгрузил ${amountToTake} ед. ${caravan.cargoItem.name}`);
+
+                if (this.scene.selectedCity && 
+                    this.scene.viewingType === 'city' && 
+                    Number(this.scene.selectedCity.cityData.id) === fromCityId) {
+                    this.scene.ui.updateCityInfo(this.scene.selectedCity.cityData, this.scene.routes);
+                }
+            } else {
+                // На складе нет нужного количества
+                caravan.cargoAmount = 0;
+                caravan.cargoItem = null;
+                caravan.updateCargoVisual(false);
+            }
         }
     }
 

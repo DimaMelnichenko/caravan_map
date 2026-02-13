@@ -6,7 +6,7 @@ def collect_files(source_dir, output_file, extensions=None, ignore_dirs=None):
     Собирает содержимое файлов из source_dir в один output_file.
     """
     if ignore_dirs is None:
-        ignore_dirs = ['.git', '__pycache__', 'venv', '.idea', '.vscode', 'node_modules', 'data']
+        ignore_dirs = ['.git', '__pycache__', 'venv', '.idea', '.vscode', 'node_modules', 'data', 'assets']
     
     # Преобразуем расширения в кортеж для проверки (например: ('.py', '.txt'))
     if extensions:
@@ -24,7 +24,7 @@ def collect_files(source_dir, output_file, extensions=None, ignore_dirs=None):
                 dirs[:] = [d for d in dirs if d not in ignore_dirs]
 
                 for file in files:
-                    if file in ["package.json", "migrate.js", "package-lock.json" ]:
+                    if file in ["package.json", "migrate.js", "package-lock.json", 'world.db', 'collect_files.py', '.gitignore' ]:
                         continue
                     file_path = os.path.join(root, file)
                     abs_file_path = os.path.abspath(file_path)

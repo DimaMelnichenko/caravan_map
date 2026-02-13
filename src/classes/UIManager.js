@@ -48,14 +48,30 @@ export default class UIManager {
         const country = this.scene.routesData.countries.find(c => c.id === cityData.country_id);
         const countryName = country ? country.name : 'Независимый город';
 
-        // Фильтруем маршруты для этого города
+        // 1. Получаем экономику города
+        const economy = this.scene.routesData.cityEconomy.filter(e => e.city_id === cityData.id);
+        const allItems = this.scene.routesData.items;
+
+        // Формируем HTML для производства
+        const prodHTML = economy
+            .filter(e => e.type === 'production')
+            .map(e => {
+                const item = allItems.find(i => i.id === e.item_id);
+                return `<span class="eco-tag production">📦 ${item ? item.name : '???'} (+${e.amount})</span>`;
+            }).join('') || '<span style="color: #666;">Ничего не производит</span>';
+
+        // Формируем HTML для потребления
+        const consHTML = economy
+            .filter(e => e.type === 'consumption')
+            .map(e => {
+                const item = allItems.find(i => i.id === e.item_id);
+                return `<span class="eco-tag consumption">🍴 ${item ? item.name : '???'} (-${e.amount})</span>`;
+            }).join('') || '<span style="color: #666;">Ничего не потребляет</span>';
+
+        // 2. Фильтруем маршруты
         const connectedRoutes = routes.filter(r => 
             r.routeData.from_id === cityData.id || r.routeData.to_id === cityData.id
         );
-
-        const goodsHTML = cityData.goods?.length > 0
-            ? `<div class="goods-list">${cityData.goods.map(g => `<span class="good-tag">${g}</span>`).join('')}</div>`
-            : '<span>Нет товаров</span>';
 
         const routesHTML = connectedRoutes.map(route => {
             const isFrom = route.routeData.from_id === cityData.id;
@@ -70,12 +86,41 @@ export default class UIManager {
             `;
         }).join('');
 
+        const inventory = this.scene.routesData.cityInventory.filter(i => i.city_id === cityData.id && i.amount > 0);
+        const currentTotal = inventory.reduce((sum, i) => sum + i.amount, 0);
+        const maxStorage = cityData.max_storage || 1000;
+        const percent = Math.min(100, (currentTotal / maxStorage) * 100);
+
+        const storageHTML = `
+            <div class="economy-info-block">
+                <div class="economy-info-title">📦 Склад (${Math.round(currentTotal)} / ${maxStorage}):</div>
+                <div style="width: 100%; height: 8px; background: #222; border-radius: 4px; margin-bottom: 8px;">
+                    <div style="width: ${percent}%; height: 100%; background: #4a6fa5; border-radius: 4px; transition: width 0.3s;"></div>
+                </div>
+                ${inventory.map(i => {
+                    const item = allItems.find(it => it.id === i.item_id);
+                    return `<div style="font-size: 13px;">• ${item?.name}: <strong>${Math.round(i.amount)}</strong></div>`;
+                }).join('') || '<div style="color: #666;">Пусто</div>'}
+            </div>
+        `;
+
+        // 3. Собираем всё в итоговый HTML
         this.cityInfoContent.innerHTML = `
             <div class="city-property">Город: <strong>${cityData.name}</strong></div>
             <div class="city-property">Держава: <strong style="color: #8b87dc;">${countryName}</strong></div>
             <div class="city-property">Население: ${cityData.population?.toLocaleString()}</div>
-            <div class="city-property">Товары: ${goodsHTML}</div>
-            <div class="city-property">Маршруты (${connectedRoutes.length}):</div>
+            
+            <div class="economy-info-block">
+                <div class="economy-info-title">🏭 Производство:</div>
+                ${prodHTML}
+            </div>
+
+            <div class="economy-info-block">
+                <div class="economy-info-title">🍴 Потребление:</div>
+                ${consHTML}
+            </div>
+            ${storageHTML}        
+            <div class="city-property" style="margin-top:15px;">Маршруты (${connectedRoutes.length}):</div>
             ${routesHTML}
         `;
     }
@@ -156,7 +201,25 @@ export default class UIManager {
         document.getElementById('edit-city-name').value = cityData.name;
         document.getElementById('edit-city-population').value = cityData.population || 0;
         document.getElementById('edit-city-desc').value = cityData.description || '';
-        document.getElementById('edit-city-goods').value = (cityData.goods || []).join(', ');
+
+         // Очищаем списки экономики
+        document.getElementById('production-list').innerHTML = '';
+        document.getElementById('consumption-list').innerHTML = '';
+
+        // Заполняем данными из базы
+        const economy = this.scene.routesData.cityEconomy.filter(e => e.city_id === cityData.id);
+        
+        economy.forEach(item => {
+            if (item.type === 'production') {
+                this.createEconomyRow('production-list', item.item_id, item.amount);
+            } else {
+                this.createEconomyRow('consumption-list', item.item_id, item.amount);
+            }
+        });
+
+        // Настраиваем кнопки "Добавить"
+        document.getElementById('add-production-btn').onclick = () => this.createEconomyRow('production-list');
+        document.getElementById('add-consumption-btn').onclick = () => this.createEconomyRow('consumption-list');
 
         // Твой эффект мигания
         this.cityEditor.style.borderColor = '#00FF00';
@@ -232,9 +295,46 @@ export default class UIManager {
         this.cityInfoContent.innerHTML = `
             <div class="city-property" style="border-color: #ff9900;">🚚 <strong>${info.title}</strong></div>
             <div class="city-property">Маршрут: <strong>${info.from} → ${info.to}</strong></div>
-            <div class="city-property">Груз: <span class="good-tag">${info.good}</span></div>
+            <div class="city-property">Груз: <span class="eco-tag production">${info.good}</span></div>
             <hr>
-            <p><small>Караваны перевозят товары между городами, поддерживая экономику держав.</small></p>
+            <p><small>Этот караван везет товары, которые производятся в городе отправления и востребованы (или экспортируются) в город назначения.</small></p>
         `;
+    }
+
+    // Метод для создания одной строки (товар + количество + кнопка удалить)
+    createEconomyRow(containerId, itemId = 0, amount = 0) {
+        const container = document.getElementById(containerId);
+        const row = document.createElement('div');
+        row.className = 'economy-row';
+
+        // Создаем выпадающий список товаров
+        let options = this.scene.routesData.items.map(item => 
+            `<option value="${item.id}" ${item.id == itemId ? 'selected' : ''}>${item.name}</option>`
+        ).join('');
+
+        row.innerHTML = `
+            <select class="item-select">${options}</select>
+            <input type="number" class="item-amount" value="${amount}" step="0.1" min="0">
+            <button class="remove-btn">×</button>
+        `;
+
+        // Удаление строки
+        row.querySelector('.remove-btn').onclick = () => row.remove();
+        
+        container.appendChild(row);
+    }
+
+    // Метод для сбора данных из UI перед сохранением
+    getEconomyData() {
+        const collect = (containerId, type) => {
+            const rows = document.querySelectorAll(`#${containerId} .economy-row`);
+            return Array.from(rows).map(row => ({
+                item_id: parseInt(row.querySelector('.item-select').value),
+                amount: parseFloat(row.querySelector('.item-amount').value) || 0,
+                type: type
+            }));
+        };
+
+        return [...collect('production-list', 'production'), ...collect('consumption-list', 'consumption')];
     }
 }

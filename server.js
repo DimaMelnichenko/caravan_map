@@ -31,24 +31,115 @@ db.serialize(() => {
         from_id INTEGER, to_id INTEGER, type TEXT,
         points TEXT, speedCoeff REAL, unitCount INTEGER
     )`);
+
+    // Справочник товаров
+    db.run(`CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY,
+        name TEXT UNIQUE,
+        icon TEXT,
+        base_price REAL
+    )`);
+
+    // Таблица экономики городов (производство и потребление)
+    db.run(`CREATE TABLE IF NOT EXISTS city_economy (
+        city_id INTEGER,
+        item_id INTEGER,
+        type TEXT, -- 'production' или 'consumption'
+        amount REAL,
+        PRIMARY KEY (city_id, item_id, type),
+        FOREIGN KEY (city_id) REFERENCES cities(id),
+        FOREIGN KEY (item_id) REFERENCES items(id)
+    )`);
+
+    // Добавим несколько базовых товаров, если таблица пуста
+    db.get("SELECT count(*) as count FROM items", (err, row) => {
+        if (row.count === 0) {
+            const stmt = db.prepare("INSERT INTO items (name, icon, base_price) VALUES (?, ?, ?)");
+            const basicItems = [
+                ['Зерно', 'icon_grain', 10],
+                ['Железо', 'icon_iron', 50],
+                ['Дерево', 'icon_wood', 20],
+                ['Вино', 'icon_wine', 80],
+                ['Ткань', 'icon_cloth', 40]
+            ];
+            basicItems.forEach(item => stmt.run(item));
+            stmt.finalize();
+        }
+    });
+
+    db.run(`ALTER TABLE cities ADD COLUMN max_storage INTEGER DEFAULT 1000`, (err) => {
+        // Игнорируем ошибку, если колонка уже есть
+    });
+
+    // 2. Таблица текущих запасов
+    db.run(`CREATE TABLE IF NOT EXISTS city_inventory (
+        city_id INTEGER,
+        item_id INTEGER,
+        amount REAL DEFAULT 0,
+        PRIMARY KEY (city_id, item_id)
+    )`);
 });
 
-// Эндпоинт загрузки всех данных при старте игры
-app.get('/api/load', (req, res) => {
-    const data = { cities: [], routes: [], countries: [] };
-    
-    db.all("SELECT * FROM countries order by name", [], (err, rows) => {
-        data.countries = rows;
-        db.all("SELECT * FROM cities", [], (err, rows) => {
-            // Преобразуем goods обратно в массив из строки
-            data.cities = rows.map(c => ({...c, goods: c.goods ? c.goods.split(',') : []}));
-            db.all("SELECT * FROM routes", [], (err, rows) => {
-                // Преобразуем points обратно в массив из JSON-строки
-                data.routes = rows.map(r => ({...r, points: JSON.parse(r.points || '[]')}));
-                res.json(data);
-            });
+// Вспомогательная функция для выполнения SQL-запросов с возвратом Promise
+const dbAll = (sql, params = []) => {
+    return new Promise((resolve, reject) => {
+        db.all(sql, params, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
         });
     });
+};
+
+const loadCountries = () => dbAll("SELECT * FROM countries ORDER BY name");
+
+const loadItems = () => dbAll("SELECT * FROM items");
+
+const loadCityEconomy = () => dbAll("SELECT * FROM city_economy");
+
+const loadCityInventory = () => dbAll("SELECT * FROM city_inventory");
+
+const loadCities = async () => {
+    const rows = await dbAll("SELECT * FROM cities");
+    return rows.map(c => ({
+        ...c,
+        goods: c.goods ? c.goods.split(',') : []
+    }));
+};
+
+const loadRoutes = async () => {
+    const rows = await dbAll("SELECT * FROM routes");
+    return rows.map(r => ({
+        ...r,
+        points: JSON.parse(r.points || '[]')
+    }));
+};
+
+
+app.get('/api/load', async (req, res) => {
+    try {
+        // Запускаем все подфункции одновременно
+        const [countries, items, cityEconomy, cities, routes, cityInventory] = await Promise.all([
+            loadCountries(),
+            loadItems(),
+            loadCityEconomy(),
+            loadCities(),
+            loadRoutes(),
+            loadCityInventory()
+        ]);
+
+        // Отправляем собранный объект
+        res.json({
+            countries,
+            items,
+            cityEconomy,
+            cities,
+            routes,
+            cityInventory
+        });
+    } catch (err) {
+        console.error("Ошибка при загрузке данных:", err);
+        res.status(500).json({ error: "Ошибка сервера при чтении базы данных" });
+    }
 });
 
 // Эндпоинт сохранения (полная перезапись для простоты или точечные запросы)
@@ -82,14 +173,19 @@ app.post('/api/save', (req, res) => {
     });
 });
 
-app.post('/api/cities', (req, res) => {
+app.post('/api/cities', async (req, res) => {
     const c = req.body;
-    const stmt = db.prepare("INSERT OR REPLACE INTO cities (id, name, x, y, description, population, storage, goods, country_id) VALUES (?,?,?,?,?,?,?,?,?)");
-    stmt.run(c.id, c.name, c.x, c.y, c.description, c.population, c.storage, c.goods.join(','), c.country_id, (err) => {
-        if (err) res.status(500).json({ error: err.message });
-        else res.json({ message: "City saved" });
-    });
-    stmt.finalize();
+    const sql = `INSERT OR REPLACE INTO cities 
+                 (id, name, x, y, description, population, storage, goods, country_id) 
+                 VALUES (?,?,?,?,?,?,?,?,?)`;
+    const params = [c.id, c.name, c.x, c.y, c.description, c.population, c.storage, c.goods.join(','), c.country_id];
+
+    try {
+        await new Promise((res, rej) => db.run(sql, params, err => err ? rej(err) : res()));
+        res.json({ message: "City saved" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Удалить город
@@ -128,6 +224,53 @@ app.post('/api/countries', (req, res) => {
         else res.json({ message: "Country saved" });
     });
     stmt.finalize();
+});
+
+app.post('/api/city-economy', async (req, res) => {
+    const { city_id, economy } = req.body; 
+    
+    // economy — это массив объектов [{item_id, type, amount}, ...]
+    
+    try {
+        // Используем транзакцию, чтобы если запись одного товара упала, не удалились старые
+        await new Promise((resolve, reject) => {
+            db.serialize(() => {
+                db.run("BEGIN TRANSACTION");
+                
+                // 1. Удаляем все старые записи экономики для этого города
+                db.run("DELETE FROM city_economy WHERE city_id = ?", [city_id]);
+
+                // 2. Подготавливаем запрос на вставку
+                const stmt = db.prepare("INSERT INTO city_economy (city_id, item_id, type, amount) VALUES (?, ?, ?, ?)");
+                
+                economy.forEach(e => {
+                    stmt.run(city_id, e.item_id, e.type, e.amount);
+                });
+                
+                stmt.finalize();
+
+                db.run("COMMIT", (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+        });
+
+        res.json({ message: "Экономика города успешно обновлена" });
+    } catch (err) {
+        console.error("Ошибка при сохранении экономики:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/save-inventory', (req, res) => {
+    const { inventory } = req.body; // Массив [{city_id, item_id, amount}, ...]
+    const stmt = db.prepare("INSERT OR REPLACE INTO city_inventory (city_id, item_id, amount) VALUES (?, ?, ?)");
+    db.serialize(() => {
+        inventory.forEach(i => stmt.run(i.city_id, i.item_id, i.amount));
+        stmt.finalize();
+        res.json({ message: "Inventory saved" });
+    });
 });
 
 const port = 8080;

@@ -39,11 +39,14 @@ export default class PreloadScene extends Phaser.Scene {
         this.load.audio('caravan_sound', ['assets/audio/caravan.mp3', 'assets/audio/caravan.ogg']);
         this.load.audio('ambient', ['assets/audio/ambient.mp3', 'assets/audio/ambient.ogg']);
         this.load.audio('city_click', ['assets/audio/city_click.mp3', 'assets/audio/city_click.ogg']);
+
+        // Загрузка иконок товаров (названия должны совпадать с полем 'icon' в таблице items)
+        this.load.image('icon_grain', 'assets/images/items/grain.png');
+        this.load.image('icon_iron', 'assets/images/items/iron.png');
+        this.load.image('icon_wood', 'assets/images/items/wood.png');
+        this.load.image('icon_wine', 'assets/images/items/wine.png');
+        this.load.image('icon_cloth', 'assets/images/items/cloth.png');
         
-        // Загрузка данных
-        this.load.json('cities_data', 'assets/data/cities.json');
-        this.load.json('routes_data', 'assets/data/routes.json');
-        this.load.json('countries_data', 'assets/data/countries.json');
     }
     
     create() {

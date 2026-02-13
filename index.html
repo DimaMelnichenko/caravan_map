@@ -77,8 +77,17 @@
         <label>Население (чел.):</label>
         <input type="number" id="edit-city-population">
 
-        <label>Товары (через запятую):</label>
-        <input type="text" id="edit-city-goods">
+        <div class="economy-section">
+            <label>🏭 Производство (ед/день):</label>
+            <div id="production-list" class="economy-list"></div>
+            <button id="add-production-btn" class="small-btn">+ Добавить товар</button>
+        </div>
+
+        <div class="economy-section" style="margin-top: 15px;">
+            <label>🍴 Потребление (ед/день):</label>
+            <div id="consumption-list" class="economy-list"></div>
+            <button id="add-consumption-btn" class="small-btn">+ Добавить товар</button>
+        </div>
         
         <div style="display: flex; gap: 10px; margin-top: 10px;">
             <button id="save-city-btn" style="background: #28a745;">Сохранить</button>

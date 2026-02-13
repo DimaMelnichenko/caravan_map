@@ -21,6 +21,7 @@ export default class MainScene extends Phaser.Scene {
         this.selectedRoute = null;
         this.editHandles = []; // Массив визуальных точек-маркеров
         this.routes = [];
+        this.viewingType = null;
     }
 
     async create() { // Добавляем async перед названием метода
@@ -42,6 +43,9 @@ export default class MainScene extends Phaser.Scene {
             track: 20,  // Базовая скорость каравана (пикс/сек)
             water: 30   // Базовая скорость корабля (пикс/сек)
         };
+
+        this.economyTimer = 0;
+        this.saveTimer = 0;
 
         this.routesData.routes.forEach(route => {
             if (route.from && !route.from_id) route.from_id = route.from;
@@ -572,6 +576,8 @@ export default class MainScene extends Phaser.Scene {
         this.selectedCity = city;
         this.selectedCity.setSelected(true);
 
+        this.viewingType = 'city';
+
         // 2. Логика UI (теперь через менеджер)
         // Метод updateCityInfo сам внутри вызовет expandInfoPanel, так что здесь это не нужно
         this.ui.updateCityInfo(city.cityData, this.routes);
@@ -612,14 +618,29 @@ export default class MainScene extends Phaser.Scene {
             data.name = document.getElementById('edit-city-name').value;
             data.population = parseInt(document.getElementById('edit-city-population').value) || 0;
             data.description = document.getElementById('edit-city-desc').value;
-            data.goods = document.getElementById('edit-city-goods').value.split(',').map(s => s.trim());
             data.country_id = parseInt(document.getElementById('edit-city-country').value);
 
-            // ТОЧЕЧНОЕ СОХРАНЕНИЕ
-            const success = await this.dataService.saveCity(data);
-            if (success) {
-                this.ui.showNotification(`Город ${data.name} сохранен`, 'success');
-                this.refreshMap(); 
+             // 1. Сбор данных экономики из динамических списков
+            const economyData = this.ui.getEconomyData();
+
+            // 2. Отправка на сервер
+            try {
+                const successCity = await this.dataService.saveCity(data);
+                const successEconomy = await this.dataService.saveCityEconomy(id, economyData);
+
+                if (successCity && successEconomy) {
+                    // Обновляем локальный кэш данных в сцене
+                    this.routesData.cityEconomy = this.routesData.cityEconomy.filter(e => e.city_id !== id);
+                    economyData.forEach(e => {
+                        this.routesData.cityEconomy.push({ city_id: id, ...e });
+                    });
+
+                    this.ui.showNotification(`Данные города ${data.name} сохранены`, 'success');
+                    this.refreshMap(); 
+                }
+            } catch (err) {
+                console.error("Ошибка сохранения:", err);
+                this.ui.showNotification('Ошибка при связи с сервером', 'error');
             }
         }
     }
@@ -719,7 +740,7 @@ export default class MainScene extends Phaser.Scene {
         graphics.fill();
     }
     
-    update() {
+    update(time, delta) {
         // Обновление звуков
         if (this.ambientSound) {
             this.ambientSound.setVolume(window.isMuted ? 0 : window.gameVolume * 0.3);
@@ -750,6 +771,65 @@ export default class MainScene extends Phaser.Scene {
             );
         } else if (this.ghostGraphics) {
             this.ghostGraphics.clear();
+        }
+
+
+        const dt = (delta / 1000) * (window.gameSpeed || 1);
+
+        // БЛОК 1: ЭКОНОМИКА (каждую 1 секунду)
+        this.economyTimer = (this.economyTimer || 0) + dt;
+        if (this.economyTimer >= 1) {
+            this.processEconomy(); 
+            this.economyTimer = 0; // СБРОС ТАЙМЕРА ЭКОНОМИКИ
+            // console.log("Экономический тик (1 сек)"); 
+        }
+
+        // БЛОК 2: СОХРАНЕНИЕ В БД (каждые 30 секунд)
+        this.saveTimer = (this.saveTimer || 0) + dt;
+        if (this.saveTimer >= 30) {
+            this.dataService.saveAllInventory(this.routesData.cityInventory);
+            this.saveTimer = 0; // СБРОС ТАЙМЕРА СОХРАНЕНИЯ
+            console.log("--- Данные складов сохранены в БД ---");
+        }
+    }
+
+    processEconomy() {
+
+        if (!this.routesData || !this.routesData.cityInventory) {
+            console.error("Данные инвентаря не загружены!");
+            return;
+        }
+
+        console.log("Экономический тик...");
+        
+
+        this.routesData.cities.forEach(city => {
+            const economy = this.routesData.cityEconomy.filter(e => e.city_id === city.id);
+            const inventory = this.routesData.cityInventory;
+
+            economy.forEach(eco => {
+                // Находим или создаем запись в инвентаре
+                let inv = inventory.find(i => i.city_id === city.id && i.item_id === eco.item_id);
+                if (!inv) {
+                    inv = { city_id: city.id, item_id: eco.item_id, amount: 0 };
+                    inventory.push(inv);
+                }
+
+                if (eco.type === 'production') {
+                    // Проверка лимита склада
+                    const currentTotal = inventory.filter(i => i.city_id === city.id).reduce((sum, i) => sum + i.amount, 0);
+                    if (currentTotal < (city.max_storage || 1000)) {
+                        inv.amount += eco.amount;
+                    }
+                } else if (eco.type === 'consumption') {
+                    inv.amount = Math.max(0, inv.amount - eco.amount);
+                }
+            });
+        });
+
+        // Если открыта панель города — обновляем цифры в реальном времени
+        if (this.selectedCity && this.viewingType === 'city') {
+            this.ui.updateCityInfo(this.selectedCity.cityData, this.routes);
         }
     }
 
