@@ -78,6 +78,35 @@ db.serialize(() => {
         amount REAL DEFAULT 0,
         PRIMARY KEY (city_id, item_id)
     )`);
+
+    // Справочник типов транспорта
+    db.run(`CREATE TABLE IF NOT EXISTS transport_types (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        capacity INTEGER,
+        speed REAL, -- Базовая скорость (пикселей в секунду)
+        texture TEXT -- Имя текстуры (caravan или ship)
+    )`);
+
+    // Добавим колонку transport_id в таблицу routes, если её нет
+    db.run(`ALTER TABLE routes ADD COLUMN transport_id INTEGER DEFAULT 1`, (err) => {});
+
+    // Наполним базовыми типами, если пусто
+    db.get("SELECT count(*) as count FROM transport_types", (err, row) => {
+        if (row.count === 0) {
+            const stmt = db.prepare("INSERT INTO transport_types (name, capacity, speed, texture) VALUES (?, ?, ?, ?)");
+            stmt.run("Торговая повозка", 1, 2, "caravan");
+            stmt.run("Торговое судно", 3, 20, "ship");
+            stmt.finalize();
+        }
+    });
+
+    db.run(`CREATE TABLE IF NOT EXISTS borders (
+        id INTEGER PRIMARY KEY,
+        country_id INTEGER,
+        points TEXT
+    )`);
+
 });
 
 // Вспомогательная функция для выполнения SQL-запросов с возвратом Promise
@@ -97,6 +126,10 @@ const loadItems = () => dbAll("SELECT * FROM items");
 const loadCityEconomy = () => dbAll("SELECT * FROM city_economy");
 
 const loadCityInventory = () => dbAll("SELECT * FROM city_inventory");
+
+const loadTransportTypes = () => dbAll("SELECT * FROM transport_types");
+
+const loadBorders = () => dbAll("SELECT * FROM borders");
 
 const loadCities = async () => {
     const rows = await dbAll("SELECT * FROM cities");
@@ -118,13 +151,15 @@ const loadRoutes = async () => {
 app.get('/api/load', async (req, res) => {
     try {
         // Запускаем все подфункции одновременно
-        const [countries, items, cityEconomy, cities, routes, cityInventory] = await Promise.all([
+        const [countries, items, cityEconomy, cities, routes, cityInventory, transportTypes, borders] = await Promise.all([
             loadCountries(),
             loadItems(),
             loadCityEconomy(),
             loadCities(),
             loadRoutes(),
-            loadCityInventory()
+            loadCityInventory(),
+            loadTransportTypes(),
+            loadBorders()
         ]);
 
         // Отправляем собранный объект
@@ -134,43 +169,14 @@ app.get('/api/load', async (req, res) => {
             cityEconomy,
             cities,
             routes,
-            cityInventory
+            cityInventory,
+            transportTypes,
+            borders
         });
     } catch (err) {
         console.error("Ошибка при загрузке данных:", err);
         res.status(500).json({ error: "Ошибка сервера при чтении базы данных" });
     }
-});
-
-// Эндпоинт сохранения (полная перезапись для простоты или точечные запросы)
-app.post('/api/save', (req, res) => {
-    const { cities, routes, countries } = req.body;
-
-    db.serialize(() => {
-        db.run("BEGIN TRANSACTION");
-        
-        // Очищаем старые данные (или можно делать UPDATE/INSERT)
-        db.run("DELETE FROM countries");
-        db.run("DELETE FROM cities");
-        db.run("DELETE FROM routes");
-
-        const cityStmt = db.prepare("INSERT INTO cities VALUES (?,?,?,?,?,?,?,?,?)");
-        cities.forEach(c => cityStmt.run(c.id, c.name, c.x, c.y, c.description, c.population, c.storage, c.goods.join(','), c.country_id));
-        cityStmt.finalize();
-
-        const routeStmt = db.prepare("INSERT INTO routes VALUES (?,?,?,?,?,?,?)");
-        routes.forEach(r => routeStmt.run(r.id, r.from_id, r.to_id, r.type, JSON.stringify(r.points), r.speedCoeff, r.unitCount));
-        routeStmt.finalize();
-
-        const countryStmt = db.prepare("INSERT INTO countries VALUES (?,?,?,?,?,?,?,?,?,?)");
-        countries.forEach(c => countryStmt.run(c.id, c.name, c.x, c.y, c.angle, c.race, c.religion, c.population, c.culture, c.militancy));
-        countryStmt.finalize();
-
-        db.run("COMMIT", (err) => {
-            if (err) res.status(500).send(err);
-            else res.send({ message: "База данных успешно обновлена" });
-        });
-    });
 });
 
 app.post('/api/cities', async (req, res) => {
@@ -212,6 +218,19 @@ app.delete('/api/routes/:id', (req, res) => {
     db.run("DELETE FROM routes WHERE id = ?", req.params.id, (err) => {
         if (err) res.status(500).json({ error: err.message });
         else res.json({ message: "Route deleted" });
+    });
+});
+
+// Удалить линию границы
+app.delete('/api/borders/:id', (req, res) => {
+    const id = req.params.id;
+    db.run("DELETE FROM borders WHERE id = ?", id, (err) => {
+        if (err) {
+            console.error("Ошибка при удалении границы:", err.message);
+            res.status(500).json({ error: err.message });
+        } else {
+            res.json({ message: "Border deleted" });
+        }
     });
 });
 
@@ -271,6 +290,16 @@ app.post('/api/save-inventory', (req, res) => {
         stmt.finalize();
         res.json({ message: "Inventory saved" });
     });
+});
+
+app.post('/api/borders', (req, res) => {
+    const b = req.body;
+    const stmt = db.prepare("INSERT OR REPLACE INTO borders (id, country_id, points) VALUES (?,?,?)");
+    stmt.run(b.id, b.country_id, JSON.stringify(b.points), (err) => {
+        if (err) res.status(500).json({ error: err.message });
+        else res.json({ message: "Border saved" });
+    });
+    stmt.finalize();
 });
 
 const port = 8080;

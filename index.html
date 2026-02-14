@@ -16,6 +16,7 @@
             <button id="add-city-btn" style="background: #e67e22; font-weight: bold;">🏘️ Новый город (клик на карту)</button>
             <button id="add-route-btn" style="background: #6b4e31; font-weight: bold;">🗺️ Проложить путь (город -> город)</button>
             <button id="add-country-btn" style="background: #28a745; font-weight: bold;">🚩 Новая Держава</button>
+            <button id="toggle-border-editor-btn" style="background: #6b4e91; font-weight: bold;">🖋️ Редактор границ</button>
         </div>
     </div>
 
@@ -100,11 +101,8 @@
         <h3>🗺️ Редактор пути</h3>
         <input type="hidden" id="edit-route-id">
         
-        <label>Тип пути:</label>
-        <select id="edit-route-type" style="width: 100%; background: #222; color: white; margin-bottom: 10px; padding: 5px;">
-            <option value="track">Сухопутный (Тракт)</option>
-            <option value="water">Водный (Море)</option>
-        </select>
+        <label>Тип транспорта:</label>
+        <select id="edit-route-transport" style="width: 100%; background: #222; color: white; margin-bottom: 10px; padding: 5px;"></select>
         
         <!-- НОВЫЕ ПОЛЯ -->
         <label>Качество дороги (Коэф.):</label>
@@ -165,6 +163,21 @@
             <button id="save-country-btn" style="background: #28a745; flex: 1;">Сохранить</button>
             <button id="delete-country-btn" style="background: #dc3545; flex: 1;">Удалить</button>
         </div>
+    </div>
+
+    <div id="border-panel" class="ui-panel" style="display: none; position: fixed; right: 20px; top: 150px; width: 300px;">
+        <h3>🖋️ Границы Держав</h3>
+        <p style="font-size: 0.8em; color: #ccc;">Режим редактирования границ активен.</p>
+        
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
+            <button id="create-border-btn" style="background: #28a745;">➕ Создать новую линию</button>
+            <button id="delete-border-btn" style="background: #dc3545;">🗑️ Удалить выбранную</button>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid #4a6fa5; margin: 15px 0;">
+        <p style="font-size: 0.85em;">• Кликните на линию, чтобы выбрать её.<br>• Тяните за точки.<br>• Shift + Клик: добавить точку.</p>
+        
+        <button id="close-border-mode" style="background: #666; width: 100%; margin-top: 10px;">Выйти из режима границ</button>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>

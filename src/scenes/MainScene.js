@@ -4,6 +4,7 @@ import City from '../classes/City.js';
 import Route from '../classes/Route.js';
 import UIManager from '../classes/UIManager.js';
 import DataService from '../services/DataService.js';
+import Border from '../classes/Border.js';
 
 
 export default class MainScene extends Phaser.Scene {
@@ -36,13 +37,23 @@ export default class MainScene extends Phaser.Scene {
     initGame() {
         // Добавление карты
         this.map = this.add.image(0, 0, 'map')
+            .setDepth(0)
             .setOrigin(0)
             .setScale(1.5);
 
-        this.baseSpeeds = {
-            track: 20,  // Базовая скорость каравана (пикс/сек)
-            water: 30   // Базовая скорость корабля (пикс/сек)
-        };
+        this.borders = []; 
+        const worldWidth = this.map.displayWidth;
+        const worldHeight = this.map.displayHeight;
+        if (this.borderLayer) this.borderLayer.destroy();
+        this.borderLayer = this.add.renderTexture(0, 0, worldWidth, worldHeight)
+            .setDepth(2)
+            .setOrigin(0, 0);
+        if (!this.dashStamp) {
+            this.dashStamp = this.make.sprite({ key: 'border_dash' }, false);
+            this.dashStamp.setScale( 0.7 ).setAlpha( 0.7 );
+        }
+
+        this.cameras.main.setBounds(0, 0, worldWidth, worldHeight);
 
         this.economyTimer = 0;
         this.saveTimer = 0;
@@ -81,6 +92,8 @@ export default class MainScene extends Phaser.Scene {
         // 3. ЗАПУСКАЕМ ДВИЖЕНИЕ
         // Этот метод использует созданные Curve для запуска спрайтов
         this.createFollowers();
+
+        this.initBordersSystem(this.routesData.borders)
         
         // Звуки
         this.ambientSound = this.sound.add('ambient', {
@@ -140,6 +153,21 @@ export default class MainScene extends Phaser.Scene {
             this.updatePlacementCursor();
         };
 
+        this.input.keyboard.on('keydown-DELETE', async () => {
+            if (this.isEditorMode && this.selectedBorder) {
+                if (confirm('Удалить эту линию границы?')) {
+                    const success = await this.dataService.deleteBorder(this.selectedBorder.data.id);
+                    if (success) {
+                        this.borders = this.borders.filter(b => b !== this.selectedBorder);
+                        this.selectedBorder = null;
+                        this.editHandles.forEach(h => h.destroy());
+                        this.redrawBorders();
+                        this.ui.showNotification('Граница удалена');
+                    }
+                }
+            }
+        });
+
         // Создаем графический объект для "призрачной линии" (один раз)
         this.ghostGraphics = this.add.graphics().setDepth(100);
 
@@ -155,14 +183,28 @@ export default class MainScene extends Phaser.Scene {
 
         document.getElementById('save-route-btn').onclick = async () => {
             if (this.selectedRoute) {
-                this.selectedRoute.type = document.getElementById('edit-route-type').value;
-                this.selectedRoute.speedCoeff = parseFloat(document.getElementById('edit-route-coeff').value);
-                this.selectedRoute.unitCount = parseInt(document.getElementById('edit-route-count').value);
+                // Находим элементы
+                const transportEl = document.getElementById('edit-route-transport');
+                const coeffEl = document.getElementById('edit-route-coeff');
+                const countEl = document.getElementById('edit-route-count');
+
+                // Проверяем, что элементы существуют, прежде чем брать .value
+                if (!transportEl || !coeffEl || !countEl) {
+                    console.error("Ошибка: Не найдены элементы редактора пути в HTML!");
+                    return;
+                }
+
+                // Обновляем данные в объекте
+                this.selectedRoute.transport_id = parseInt(transportEl.value);
+                this.selectedRoute.speedCoeff = parseFloat(coeffEl.value);
+                this.selectedRoute.unitCount = parseInt(countEl.value);
                 
+                // Сохраняем в БД через сервис
                 const success = await this.dataService.saveRoute(this.selectedRoute);
+                
                 if (success) {
-                    this.ui.showNotification('Путь обновлен', 'success');
-                    this.refreshScene();
+                    this.ui.showNotification('Торговый путь обновлен', 'success');
+                    this.refreshScene(); // Перезапуск караванов с новыми параметрами
                 }
             }
         };
@@ -277,6 +319,75 @@ export default class MainScene extends Phaser.Scene {
         }, 1000);
     }
 
+    initBordersSystem(borders) {
+
+        document.getElementById('toggle-border-editor-btn').onclick = () => {
+            this.toggleBorderMode();
+        };
+
+        document.getElementById('close-border-mode').onclick = () => {
+            this.toggleBorderMode();
+        };
+
+        // Кнопки внутри панели
+        document.getElementById('create-border-btn').onclick = () => this.createNewBorder();
+        document.getElementById('delete-border-btn').onclick = () => this.deleteSelectedBorder();
+
+        this.borders = borders.map(data => new Border(this, data));
+
+        // 2. Отрисовываем их на холсте
+        this.redrawBorders();
+    }
+
+    async deleteSelectedBorder() {
+        if (!this.selectedBorder) {
+            this.ui.showNotification('Сначала выберите линию (кликните по ней)', 'error');
+            return;
+        }
+
+        if (confirm('Удалить эту линию границы навсегда?')) {
+            const id = this.selectedBorder.data.id;
+            const success = await this.dataService.deleteBorder(id);
+            if (success) {
+                this.borders = this.borders.filter(b => b.data.id !== id);
+                this.selectedBorder = null;
+                this.editHandles.forEach(h => h.destroy());
+                this.editHandles = [];
+                this.redrawBorders();
+                this.ui.showNotification('Граница удалена');
+            }
+        }
+    }
+
+    getDistanceToCurve(curve, point) {
+        let minBorderDist = Infinity;
+        const divisions = 100; // Точность поиска
+        for (let i = 0; i <= divisions; i++) {
+            const p = curve.getPointAt(i / divisions); // Обязательно getPointAt
+            const dist = Phaser.Math.Distance.Between(point.x, point.y, p.x, p.y);
+            if (dist < minBorderDist) minBorderDist = dist;
+        }
+        return minBorderDist;
+    }
+
+    toggleBorderMode() {
+        if (this.viewingType !== 'edit_borders') {
+            this.viewingType = 'edit_borders';
+            this.ui.showBorderPanel();
+            this.ui.showNotification('Режим редактирования границ');
+            // Снимаем выделение с городов/стран
+            if (this.selectedCity) this.selectedCity.setSelected(false);
+            this.selectedCity = null;
+        } else {
+            this.viewingType = null;
+            this.ui.hideAllEditors();
+            this.selectedBorder = null;
+            this.editHandles.forEach(h => h.destroy());
+            this.editHandles = [];
+            this.ui.showNotification('Режим границ выключен');
+        }
+    }
+
     updatePlacementCursor() {
         if (this.isPlacingCity) {
             this.input.setDefaultCursor('crosshair'); // Крестик, когда мы "строим"
@@ -299,13 +410,42 @@ export default class MainScene extends Phaser.Scene {
                     this.drawAllRoutes(); 
                 }
             }
+
+            if (gameObject.getData('type') === 'borderHandle') {
+                gameObject.x = dragX;
+                gameObject.y = dragY;
+                
+                const index = gameObject.getData('index');
+                const border = gameObject.getData('borderParent');
+                
+                border.points[index] = [Math.round(dragX), Math.round(dragY)];
+                border.updateCurve();
+                
+                this.redrawBorders(); // Перерисовываем холст "на лету"
+            }
         });
 
-        this.input.on('dragend', (pointer, gameObject) => {
+        this.input.on('dragend', async (pointer, gameObject) => {
             if (gameObject.getData('type') === 'pathHandle') {
                 // А вот когда отпустили точку — пересоздаем караваны, чтобы они поехали по новому пути
                 this.refreshScene();
                 // И сохраняем автоматически (по желанию) или ждем нажатия кнопки Сохранить
+            }
+
+            if (gameObject.getData('type') === 'borderHandle') {
+                const border = gameObject.getData('borderParent');
+                
+                // Формируем объект для сохранения явно
+                const payload = {
+                    id: border.data.id,
+                    country_id: border.data.country_id,
+                    points: border.points // Отправляем наш "живой" массив
+                };
+
+                const success = await this.dataService.saveBorder(payload);
+                if (success) {
+                    this.ui.showNotification('Граница сохранена', 'success');
+                }
             }
         });
     }
@@ -389,6 +529,10 @@ export default class MainScene extends Phaser.Scene {
         });
 
         this.input.on('pointerdown', (pointer, gameObjects) => {
+
+            const borderHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'borderHandle');
+            const pathHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'pathHandle');
+
             const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
             const clickedObject = gameObjects.length > 0;
 
@@ -401,6 +545,44 @@ export default class MainScene extends Phaser.Scene {
                 };
                 this.input.setDefaultCursor('grabbing');
                 return;
+            }
+
+            // --- РЕЖИМ ГРАНИЦ ---
+            if (this.viewingType === 'edit_borders') {
+                // 1. Если кликнули по точке - ничего не делаем, даем Phaser её тащить
+                if (borderHandle) return;
+
+                // 2. Добавление новой точки (Shift + Клик)
+                if (this.shiftKey.isDown && this.selectedBorder) {
+                    this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+                    this.selectedBorder.updateCurve();
+                    this.selectBorder(this.selectedBorder); // Пересоздаем розовые точки
+                    this.redrawBorders();
+                    return;
+                }
+
+                // 3. Выбор границы кликом по линии
+                let closestBorder = null;
+                let minDistance = 30; 
+
+                this.borders.forEach(border => {
+                    if (!border.curve) return;
+                    const dist = this.getDistanceToCurve(border.curve, worldPoint);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        closestBorder = border;
+                    }
+                });
+
+                if (closestBorder) {
+                    this.selectBorder(closestBorder);
+                } else if (gameObjects.length === 0) {
+                    // Кликнули в пустоту (не по handle и не по линии) - сброс
+                    this.selectedBorder = null;
+                    this.editHandles.forEach(h => h.destroy());
+                    this.editHandles = [];
+                }
+                return; // Важно: выходим из функции, чтобы не срабатывал выбор городов
             }
 
             // --- ЛОГИКА ЛЕВОЙ КНОПКИ ---
@@ -461,6 +643,15 @@ export default class MainScene extends Phaser.Scene {
                     // Сразу перерисовываем всё
                     this.refreshScene(); 
                     this.showRouteHandles(this.selectedRoute); // Обновляем синие точки
+                    return;
+                }
+
+                if (this.isEditorMode && this.shiftKey.isDown && this.selectedBorder) {
+                    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+                    this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+                    this.selectedBorder.updateCurve();
+                    this.selectBorder(this.selectedBorder); // Пересоздаем ручки
+                    this.redrawBorders();
                     return;
                 }
 
@@ -591,21 +782,6 @@ export default class MainScene extends Phaser.Scene {
         this.highlightRoutes(city.cityData.id);
         this.cameras.main.pan(city.x, city.y, 800, 'Power2');
     }
-    
-    updateSpriteOrientation(sprite, fromPoint, toPoint) {
-        const angle = Phaser.Math.Angle.Between(fromPoint.x, fromPoint.y, toPoint.x, toPoint.y);
-        const angleDeg = Phaser.Math.RadToDeg(angle);
-
-        sprite.setAngle(angleDeg);
-
-        // Логика: если спрайт движется влево (угол между 90 и 270 градусами), 
-        // он перевернется вверх ногами. Чтобы это исправить, отражаем его по вертикали.
-        if (angleDeg > 90 || angleDeg < -90) {
-            sprite.setFlipY(true);
-        } else {
-            sprite.setFlipY(false);
-        }
-    }
 
     async saveCityData() {
         const id = parseInt(document.getElementById('edit-city-id').value);
@@ -712,34 +888,6 @@ export default class MainScene extends Phaser.Scene {
         });
     }
     
-    addArrow(graphics, x1, y1, x2, y2, color) {
-        const angle = Math.atan2(y2 - y1, x2 - x1);
-        const length = 15;
-        const headLength = 10;
-        const headAngle = Math.PI / 6;
-        
-        // Точка на 80% пути для стрелки
-        const arrowX = x1 + (x2 - x1) * 0.8;
-        const arrowY = y1 + (y2 - y1) * 0.8;
-        
-        // Рисуем стрелку
-        graphics.fillStyle(color, 1);
-        graphics.lineStyle(2, color, 1);
-        
-        graphics.beginPath();
-        graphics.moveTo(arrowX, arrowY);
-        graphics.lineTo(
-            arrowX - headLength * Math.cos(angle - headAngle),
-            arrowY - headLength * Math.sin(angle - headAngle)
-        );
-        graphics.lineTo(
-            arrowX - headLength * Math.cos(angle + headAngle),
-            arrowY - headLength * Math.sin(angle + headAngle)
-        );
-        graphics.closePath();
-        graphics.fill();
-    }
-    
     update(time, delta) {
         // Обновление звуков
         if (this.ambientSound) {
@@ -787,47 +935,40 @@ export default class MainScene extends Phaser.Scene {
         // БЛОК 2: СОХРАНЕНИЕ В БД (каждые 30 секунд)
         this.saveTimer = (this.saveTimer || 0) + dt;
         if (this.saveTimer >= 30) {
-            this.dataService.saveAllInventory(this.routesData.cityInventory);
-            this.saveTimer = 0; // СБРОС ТАЙМЕРА СОХРАНЕНИЯ
-            console.log("--- Данные складов сохранены в БД ---");
+            this.saveAllStorages(); // Вызываем новый метод
+            this.saveTimer = 0;
+        }
+    }
+
+    saveAllStorages() {
+        // Собираем данные со всех складов всех городов
+        const allInventoryData = [];
+        
+        this.cities.forEach(city => {
+            if (city.storage) {
+                const cityData = city.storage.getSaveData();
+                allInventoryData.push(...cityData);
+            }
+        });
+
+        if (allInventoryData.length > 0) {
+            this.dataService.saveAllInventory(allInventoryData);
+            console.log("💾 [СИСТЕМА] Все склады синхронизированы с БД");
         }
     }
 
     processEconomy() {
-
-        if (!this.routesData || !this.routesData.cityInventory) {
-            console.error("Данные инвентаря не загружены!");
-            return;
-        }
-
-        console.log("Экономический тик...");
-        
-
-        this.routesData.cities.forEach(city => {
-            const economy = this.routesData.cityEconomy.filter(e => e.city_id === city.id);
-            const inventory = this.routesData.cityInventory;
-
-            economy.forEach(eco => {
-                // Находим или создаем запись в инвентаре
-                let inv = inventory.find(i => i.city_id === city.id && i.item_id === eco.item_id);
-                if (!inv) {
-                    inv = { city_id: city.id, item_id: eco.item_id, amount: 0 };
-                    inventory.push(inv);
-                }
-
-                if (eco.type === 'production') {
-                    // Проверка лимита склада
-                    const currentTotal = inventory.filter(i => i.city_id === city.id).reduce((sum, i) => sum + i.amount, 0);
-                    if (currentTotal < (city.max_storage || 1000)) {
-                        inv.amount += eco.amount;
-                    }
-                } else if (eco.type === 'consumption') {
-                    inv.amount = Math.max(0, inv.amount - eco.amount);
-                }
-            });
+        this.cities.forEach(city => {
+            // Получаем правила именно для этого города
+            const rules = this.routesData.cityEconomy.filter(e => 
+                Number(e.city_id) === Number(city.cityData.id)
+            );
+            
+            // Город сам управляет своим складом
+            city.storage.processCycle(rules);
         });
 
-        // Если открыта панель города — обновляем цифры в реальном времени
+        // Обновляем UI если нужно
         if (this.selectedCity && this.viewingType === 'city') {
             this.ui.updateCityInfo(this.selectedCity.cityData, this.routes);
         }
@@ -944,5 +1085,68 @@ export default class MainScene extends Phaser.Scene {
         this.dataService.saveRoute(newRoute);
         
         console.log(`Путь ID:${newId} создан успешно.`);
+    }
+
+    // Метод полной перерисовки всех границ
+    redrawBorders() {
+        if (!this.borderLayer) {
+            console.error("Ошибка: Попытка рисовать границы до создания borderLayer");
+            return;
+        }
+        
+        this.borderLayer.clear();
+        console.log(`Отрисовка всех границ... Всего объектов: ${this.borders.length}`);
+
+        this.borders.forEach((border, index) => {
+            border.drawToCanvas(this.borderLayer, this.dashStamp);
+        });
+    }
+
+    // Функция создания новой границы (вызывается из UI)
+    async createNewBorder() {
+        const countryId = parseInt(document.getElementById('edit-country-id').value) || 0;
+        const cam = this.cameras.main;
+        
+        // Генерируем новый ID (можно просто Date.now())
+        const newId = Date.now();
+
+        const newBorderData = {
+            id: newId,
+            country_id: countryId,
+            points: [
+                [Math.round(cam.worldView.centerX - 100), Math.round(cam.worldView.centerY)],
+                [Math.round(cam.worldView.centerX + 100), Math.round(cam.worldView.centerY)]
+            ]
+        };
+
+        const border = new Border(this, newBorderData);
+        this.borders.push(border);
+        
+        // Сохраняем в БД сразу после создания
+        await this.dataService.saveBorder(newBorderData);
+        
+        this.redrawBorders();
+        this.selectBorder(border);
+        this.ui.showNotification('Граница создана и сохранена');
+    }
+
+    selectBorder(border) {
+        this.selectedBorder = border;
+        
+        // Очищаем старые точки
+        this.editHandles.forEach(h => h.destroy());
+        this.editHandles = [];
+
+        // Создаем новые точки для управления
+        border.points.forEach((p, index) => {
+            const handle = this.add.circle(p[0], p[1], 10, 0xff00ff)
+                .setInteractive({ draggable: true, useHandCursor: true })
+                .setDepth(1000)
+                .setData('type', 'borderHandle')
+                .setData('index', index)
+                .setData('borderParent', border);
+                
+            this.editHandles.push(handle);
+        });
     }
 }

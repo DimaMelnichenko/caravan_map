@@ -1,38 +1,29 @@
 export default class Caravan extends Phaser.GameObjects.Container {
-    constructor(scene, x, y, type, routeData) {
+    constructor(scene, x, y, transportData, routeData) {
         super(scene, x, y);
-
-        this.cargoAmount = 0;
-        this.cargoItem = null;
-        this.selectedItemID = null;
-
         this.scene = scene;
         this.routeData = routeData;
-        this.type = type;
+        this.transportData = transportData;
 
-        // 1. Создаем основной спрайт (повозка или корабль)
-        const texture = type === 'water' ? 'ship' : 'caravan';
+        // Физические свойства груза
+        this.capacity = transportData.capacity || 1;
+        this.cargoItem = null;
+        this.cargoAmount = 0;
+
+        // Визуальные части (базовый спрайт и иконка)
+        const texture = transportData.texture || 'caravan';
         this.baseSprite = scene.add.sprite(0, 0, texture);
-        this.baseSprite.setScale(type === 'water' ? 0.05 : 0.1);
-        
-        // Добавляем в контейнер
+        const baseScale = texture === 'ship' ? 0.05 : 0.1;
+        this.baseSprite.setScale(baseScale);
         this.add(this.baseSprite);
 
-        // 2. Создаем спрайт для иконки товара (поверх повозки)
-        // Смещаем чуть выше (y: -20)
         this.goodsIcon = scene.add.sprite(0, -20, ''); 
-        this.goodsIcon.setScale(0.4); // Иконка поменьше
-        this.goodsIcon.setVisible(false); // По умолчанию скрыта
+        this.goodsIcon.setScale(0.4);
+        this.goodsIcon.setVisible(false);
         this.add(this.goodsIcon);
 
-        // 3. Настраиваем логику выбора товара
-        this.pickRandomGoods();
-
-        // Добавляем контейнер на сцену
         scene.add.existing(this);
         this.setDepth(5);
-
-        // Сделаем караван кликабельным
         this.setupInteraction();
 
         // Создаем эффект следа (пыль для караванов, пена для кораблей)
@@ -60,62 +51,37 @@ export default class Caravan extends Phaser.GameObjects.Container {
         }
     }
 
-    pickRandomGoods() {
-        if (!this.scene.routesData) return;
-
-        const economy = this.scene.routesData.cityEconomy;
-        const items = this.scene.routesData.items;
-        
-        // Принудительно к числу для надежности сравнения
-        const fromId = Number(this.routeData.from_id);
-        const toId = Number(this.routeData.to_id);
-
-        // 1. Находим, что производит город отправления
-        const production = economy.filter(e => Number(e.city_id) === fromId && e.type === 'production');
-        
-        // 2. Находим, что потребляет город назначения
-        const consumption = economy.filter(e => Number(e.city_id) === toId && e.type === 'consumption');
-
-        // 3. Ищем товары, которые производятся в А И потребляются в Б (идеальный путь)
-        const tradeMatches = production.filter(p => 
-            consumption.some(c => Number(c.item_id) === Number(p.item_id))
-        );
-
-        let selectedItem = null;
-
-        if (tradeMatches.length > 0) {
-            const match = tradeMatches[Math.floor(Math.random() * tradeMatches.length)];
-            selectedItem = items.find(i => Number(i.id) === Number(match.item_id));
-        } else if (production.length > 0) {
-            const prod = production[Math.floor(Math.random() * production.length)];
-            selectedItem = items.find(i => Number(i.id) === Number(prod.item_id));
-        }
-
-        // --- ВОТ ТУТ МЫ ДОБАВЛЯЕМ ЛОГИЧЕСКУЮ ПРИВЯЗКУ ---
-        if (selectedItem) {
-            this.selectedItemID = Number(selectedItem.id); // Запоминаем ID для погрузки
-            this.currentGood = selectedItem.name;
-            
-            // Визуал
-            const iconKey = selectedItem.icon;
-            if (this.scene.textures.exists(iconKey)) {
-                this.goodsIcon.setTexture(iconKey);
-            }
-        } else {
-            this.selectedItemID = null;
-            this.currentGood = "Пусто";
-            this.goodsIcon.setVisible(false);
-        }
-    }
-
     // Метод для плавного удаления
     destroy() {
         if (this.particles) this.particles.destroy();
         super.destroy();
     }
 
+    // Метод для загрузки товара в "ящик"
+    loadCargo(item, amount) {
+        this.cargoItem = item;
+        this.cargoAmount = amount;
+
+        if (item && amount > 0) {
+            if (this.scene.textures.exists(item.icon)) {
+                this.goodsIcon.setTexture(item.icon);
+                this.goodsIcon.setVisible(true);
+            }
+        } else {
+            this.goodsIcon.setVisible(false);
+        }
+    }
+
+    // Метод для полной выгрузки
+    unloadCargo() {
+        const data = { item: this.cargoItem, amount: this.cargoAmount };
+        this.cargoItem = null;
+        this.cargoAmount = 0;
+        this.goodsIcon.setVisible(false);
+        return data;
+    }
+
     setupInteraction() {
-        // Устанавливаем размер зоны клика по размеру базового спрайта
         const width = this.baseSprite.width * this.baseSprite.scaleX;
         const height = this.baseSprite.height * this.baseSprite.scaleY;
         this.setSize(width, height);
@@ -124,19 +90,21 @@ export default class Caravan extends Phaser.GameObjects.Container {
         this.on('pointerdown', (pointer) => {
             pointer.event.stopPropagation();
             
-            // Показываем инфо о караване в UI
-            const startCity = this.scene.cities.find(c => c.cityData.id === this.routeData.from_id);
-            const endCity = this.scene.cities.find(c => c.cityData.id === this.routeData.to_id);
+            // Находим города для отображения имен
+            const startCity = this.scene.cities.find(c => Number(c.cityData.id) === Number(this.routeData.from_id));
+            const endCity = this.scene.cities.find(c => Number(c.cityData.id) === Number(this.routeData.to_id));
             
+            // Формируем объект информации
             const info = {
-                title: this.type === 'water' ? 'Торговое судно' : 'Торговый караван',
-                from: startCity?.cityData.name,
-                to: endCity?.cityData.name,
-                good: this.currentGood || 'Провизия'
+                // Берем название прямо из данных транспорта (из таблицы transport_types)
+                title: this.transportData.name || "Транспорт", 
+                from: startCity?.cityData.name || "Неизвестно",
+                to: endCity?.cityData.name || "Неизвестно",
+                // Показываем товар и количество, если они есть
+                good: this.cargoItem ? `${this.cargoItem.name} (${Math.round(this.cargoAmount)} ед.)` : 'Пусто (ищет товар)'
             };
-
-            this.scene.viewingType = 'caravan';
             
+            this.scene.viewingType = 'caravan'; 
             this.scene.ui.showCaravanInfo(info);
         });
     }
@@ -154,12 +122,6 @@ export default class Caravan extends Phaser.GameObjects.Container {
             this.baseSprite.setFlipY(false);
             this.goodsIcon.setFlipY(false);
             this.goodsIcon.setY(-20);
-        }
-    }
-
-    updateCargoVisual(isVisible) {
-        if (this.goodsIcon) {
-            this.goodsIcon.setVisible(isVisible);
         }
     }
 }

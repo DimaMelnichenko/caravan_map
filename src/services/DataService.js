@@ -19,23 +19,6 @@ export default class DataService {
         }
     }
 
-    /**
-     * Сохраняет всё состояние мира (текущий метод)
-     */
-    async saveWorld(allData) {
-        try {
-            const response = await fetch(`${this.baseUrl}/api/save`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(allData)
-            });
-            return response.ok;
-        } catch (err) {
-            console.error("DataService.saveWorld:", err);
-            return false;
-        }
-    }
-
     // Универсальный метод для POST запросов
     async post(endpoint, data) {
         const response = await fetch(`${this.baseUrl}${endpoint}`, {
@@ -63,6 +46,19 @@ export default class DataService {
 
     async saveAllInventory(inventory) {
         return this.post('/api/save-inventory', { inventory });
+    }
+
+    async saveBorder(borderData) {
+        // Преобразуем точки в строку JSON перед отправкой, если они еще не строка
+        const payload = {
+            ...borderData,
+            points: typeof borderData.points === 'string' ? borderData.points : JSON.stringify(borderData.points)
+        };
+        return this.post('/api/borders', payload);
+    }
+
+    async deleteBorder(id) {
+        return this.delete(`/api/borders/${id}`);
     }
 
     // Специфические методы

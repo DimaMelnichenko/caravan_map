@@ -3,7 +3,7 @@ export default class PreloadScene extends Phaser.Scene {
         super({ key: 'PreloadScene' });
     }
 
-    preload() {
+    async preload() {
         // Создание индикатора загрузки
         const progressBar = this.add.graphics();
         const progressBox = this.add.graphics();
@@ -40,16 +40,50 @@ export default class PreloadScene extends Phaser.Scene {
         this.load.audio('ambient', ['assets/audio/ambient.mp3', 'assets/audio/ambient.ogg']);
         this.load.audio('city_click', ['assets/audio/city_click.mp3', 'assets/audio/city_click.ogg']);
 
-        // Загрузка иконок товаров (названия должны совпадать с полем 'icon' в таблице items)
-        this.load.image('icon_grain', 'assets/images/items/grain.png');
-        this.load.image('icon_iron', 'assets/images/items/iron.png');
-        this.load.image('icon_wood', 'assets/images/items/wood.png');
-        this.load.image('icon_wine', 'assets/images/items/wine.png');
-        this.load.image('icon_cloth', 'assets/images/items/cloth.png');
+        try {
+            const response = await fetch('/api/load');
+            const data = await response.json();
+            this.itemsData = data.items; // Сохраняем, чтобы проверить в create()
+        } catch (e) {
+            console.error("Не удалось получить список товаров для загрузки иконок", e);
+            this.itemsData = [];
+        }
+
+        // --- ДИНАМИЧЕСКАЯ ЗАГРУЗКА ИКОНОК ---
+        this.itemsData.forEach(item => {
+            if (item.icon) {
+                // Предполагаем, что имя иконки в БД соответствует имени файла в папке
+                // Например: icon_grain -> assets/images/items/grain.png
+                const fileName = item.icon.replace('icon_', '') + '.png';
+                this.load.image(item.icon, `assets/images/items/${fileName}`);
+            }
+        });
         
+        this.load.image('border_dash', 'assets/images/border_dash.png');
     }
     
     create() {
+        
+        // --- ГЕНЕРАЦИЯ ЗАГЛУШЕК ДЛЯ НЕЗАГРУЗИВШИХСЯ ИКОНОК ---
+        this.itemsData.forEach(item => {
+            // Если текстура не появилась в менеджере (файл не найден), создаем черный квадрат
+            if (!this.textures.exists(item.icon)) {
+                console.warn(`Иконка ${item.icon} не найдена. Создаю заглушку.`);
+                
+                const size = 32;
+                const graphics = this.make.graphics({ x: 0, y: 0, add: false });
+                
+                // Рисуем черный квадрат с рамкой
+                graphics.fillStyle(0x000000, 1);
+                graphics.fillRect(0, 0, size, size);
+                graphics.lineStyle(2, 0xffffff, 0.5);
+                graphics.strokeRect(0, 0, size, size);
+                
+                // Генерируем текстуру из графики прямо в память под тем же именем (key)
+                graphics.generateTexture(item.icon, size, size);
+            }
+        });
+
         this.scene.start('MainScene');
     }
 }

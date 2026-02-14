@@ -1,4 +1,4 @@
-// src/classes/City.js
+import CityStorage from './CityStorage.js';
 
 export default class City extends Phaser.GameObjects.Sprite {
     constructor(scene, data) {
@@ -7,6 +7,9 @@ export default class City extends Phaser.GameObjects.Sprite {
         
         this.cityData = data; // Снова используем уникальное имя свойства
         this.scene = scene;
+
+        // Инициализируем склад
+        this.storage = new CityStorage(scene, data.id, data.max_storage || 1000);
 
         // Настройки из твоего оригинала
         this.setScale(scene.cityScale);

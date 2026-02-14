@@ -86,9 +86,15 @@ export default class UIManager {
             `;
         }).join('');
 
-        const inventory = this.scene.routesData.cityInventory.filter(i => i.city_id === cityData.id && i.amount > 0);
-        const currentTotal = inventory.reduce((sum, i) => sum + i.amount, 0);
-        const maxStorage = cityData.max_storage || 1000;
+        const cityObject = this.scene.cities.find(c => c.cityData.id === cityData.id);
+        if (!cityObject) return;
+
+        const storage = cityObject.storage;
+        const inventory = this.scene.routesData.cityInventory.filter(i => 
+            Number(i.city_id) === cityData.id && i.amount > 0
+        );
+        const currentTotal = storage.getTotalVolume();
+        const maxStorage = storage.maxCapacity || 1000;
         const percent = Math.min(100, (currentTotal / maxStorage) * 100);
 
         const storageHTML = `
@@ -231,8 +237,19 @@ export default class UIManager {
     showRouteEditor(routeData) {
         this.hideAllEditors();
         this.routeEditor.style.display = 'block';
+        
+        const transportSelect = document.getElementById('edit-route-transport');
+        transportSelect.innerHTML = '';
+        
+        this.scene.routesData.transportTypes.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.text = `${t.name} (Вмест: ${t.capacity}, Скорость: ${t.speed})`;
+            if (Number(t.id) === Number(routeData.transport_id)) opt.selected = true;
+            transportSelect.appendChild(opt);
+        });
+
         document.getElementById('edit-route-id').value = routeData.id;
-        document.getElementById('edit-route-type').value = routeData.type;
         document.getElementById('edit-route-coeff').value = routeData.speedCoeff || 1.0;
         document.getElementById('edit-route-count').value = routeData.unitCount;
     }
@@ -258,10 +275,17 @@ export default class UIManager {
         document.getElementById('val-angle').innerText = ang;
     }
 
+    showBorderPanel() {
+        this.hideAllEditors();
+        document.getElementById('border-panel').style.display = 'block';
+    }
+
+    // Обновите hideAllEditors, чтобы она скрывала и эту панель
     hideAllEditors() {
         this.cityEditor.style.display = 'none';
         this.routeEditor.style.display = 'none';
         this.countryEditor.style.display = 'none';
+        document.getElementById('border-panel').style.display = 'none'; // Добавьте это
     }
 
     showNotification(message, type = 'info') {

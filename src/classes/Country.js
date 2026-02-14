@@ -67,12 +67,4 @@ export default class Country extends Phaser.GameObjects.Text {
             }
         });
     }
-
-    // Метод для внешнего обновления (например, когда поменяли имя в инпуте)
-    updateVisuals(newData) {
-        this.countryData = newData;
-        this.setText(newData.name);
-        this.setAngle(newData.angle || 0);
-        this.setPosition(newData.x, newData.y);
-    }
 }
