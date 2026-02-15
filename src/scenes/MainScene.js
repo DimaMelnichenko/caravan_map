@@ -185,6 +185,7 @@ export default class MainScene extends Phaser.Scene {
             if (this.selectedRoute) {
                 // Находим элементы
                 const transportEl = document.getElementById('edit-route-transport');
+                const typeEl = document.getElementById('edit-route-type');
                 const coeffEl = document.getElementById('edit-route-coeff');
                 const countEl = document.getElementById('edit-route-count');
 
@@ -195,6 +196,7 @@ export default class MainScene extends Phaser.Scene {
                 }
 
                 // Обновляем данные в объекте
+                this.selectedRoute.type = typeEl.value;
                 this.selectedRoute.transport_id = parseInt(transportEl.value);
                 this.selectedRoute.speedCoeff = parseFloat(coeffEl.value);
                 this.selectedRoute.unitCount = parseInt(countEl.value);

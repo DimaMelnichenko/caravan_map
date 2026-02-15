@@ -205,8 +205,8 @@ app.delete('/api/cities/:id', (req, res) => {
 // Обновить или создать маршрут
 app.post('/api/routes', (req, res) => {
     const r = req.body;
-    const stmt = db.prepare("INSERT OR REPLACE INTO routes (id, from_id, to_id, type, points, speedCoeff, unitCount) VALUES (?,?,?,?,?,?,?)");
-    stmt.run(r.id, r.from_id, r.to_id, r.type, JSON.stringify(r.points), r.speedCoeff, r.unitCount, (err) => {
+    const stmt = db.prepare("INSERT OR REPLACE INTO routes (id, from_id, to_id, type, points, speedCoeff, unitCount, transport_id) VALUES (?,?,?,?,?,?,?,?)");
+    stmt.run(r.id, r.from_id, r.to_id, r.type, JSON.stringify(r.points), r.speedCoeff, r.unitCount, r.transport_id, (err) => {
         if (err) res.status(500).json({ error: err.message });
         else res.json({ message: "Route saved" });
     });

@@ -237,7 +237,9 @@ export default class UIManager {
     showRouteEditor(routeData) {
         this.hideAllEditors();
         this.routeEditor.style.display = 'block';
-        
+
+        document.getElementById('edit-route-type').value = routeData.type || 'track';
+
         const transportSelect = document.getElementById('edit-route-transport');
         transportSelect.innerHTML = '';
         
