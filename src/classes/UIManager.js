@@ -49,7 +49,7 @@ export default class UIManager {
         const countryName = country ? country.name : 'Независимый город';
 
         // 1. Получаем экономику города
-        const economy = this.scene.routesData.cityEconomy.filter(e => e.city_id === cityData.id);
+        const economy = (this.scene.routesData.cityEconomy || []).filter(e => e.city_id === cityData.id);
         const allItems = this.scene.routesData.items;
 
         // Формируем HTML для производства
@@ -90,7 +90,8 @@ export default class UIManager {
         if (!cityObject) return;
 
         const storage = cityObject.storage;
-        const inventory = this.scene.routesData.cityInventory.filter(i => 
+        const cityInventory = this.scene.routesData.cityInventory || [];
+        const inventory = cityInventory.filter(i =>
             Number(i.city_id) === cityData.id && i.amount > 0
         );
         const currentTotal = storage.getTotalVolume();

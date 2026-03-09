@@ -5,14 +5,15 @@ export default class CityStorage {
         this.scene = scene;
         this.cityId = Number(cityId);
         this.maxCapacity = maxCapacity;
-        
+
         // Ссылка на часть глобального инвентаря для удобства
-        this.inventory = this.scene.routesData.cityInventory;
+        this.inventory = this.scene.routesData.cityInventory || [];
     }
 
     // Получить количество конкретного товара
     getAmount(itemId) {
-        const record = this.inventory.find(i => 
+        if (!this.inventory) return 0;
+        const record = this.inventory.find(i =>
             Number(i.city_id) === this.cityId && Number(i.item_id) === Number(itemId)
         );
         return record ? record.amount : 0;
@@ -20,6 +21,7 @@ export default class CityStorage {
 
     // Общий объем всех товаров на складе
     getTotalVolume() {
+        if (!this.inventory) return 0;
         return this.inventory
             .filter(i => Number(i.city_id) === this.cityId)
             .reduce((sum, i) => sum + i.amount, 0);

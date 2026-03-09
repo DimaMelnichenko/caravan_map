@@ -6,7 +6,7 @@ export default class Route {
         this.scene = scene;
         this.routeData = routeData;
         this.curve = null;
-        this.caravans = []; // Массив объектов {sprite, tween}
+        this.caravans = []; // Массив объектов {sprite, serverId}
 
         this.updateCurve();
     }
@@ -15,7 +15,6 @@ export default class Route {
      * Создает или обновляет математическую кривую пути
      */
     updateCurve() {
-        // Ищем объекты городов по ID в данных маршрута
         const startCity = this.scene.cities.find(c => c.cityData.id === this.routeData.from_id);
         const endCity = this.scene.cities.find(c => c.cityData.id === this.routeData.to_id);
 
@@ -24,21 +23,17 @@ export default class Route {
             return;
         }
 
-        // Собираем все точки: Старт -> Промежуточные -> Конец
         const allPoints = [new Phaser.Math.Vector2(startCity.x, startCity.y)];
         if (this.routeData.points) {
             this.routeData.points.forEach(p => allPoints.push(new Phaser.Math.Vector2(p[0], p[1])));
         }
         allPoints.push(new Phaser.Math.Vector2(endCity.x, endCity.y));
 
-        // Создаем сплайн (кривую)
         this.curve = new Phaser.Curves.Spline(allPoints);
     }
 
     /**
      * Отрисовка линии маршрута
-     * @param {Phaser.GameObjects.Graphics} graphics - Слой для рисования
-     * @param {boolean} isSelected - Выбран ли этот путь сейчас
      */
     draw(graphics, isSelected) {
         if (!this.curve) return;
@@ -50,7 +45,6 @@ export default class Route {
         graphics.lineStyle(width, isSelected ? 0x00ff00 : color, alpha);
 
         if (this.routeData.type === 'water') {
-            // Рисуем пунктир для морских путей
             const pathLength = this.curve.getLength();
             const segmentLength = 12;
             const divisions = Math.max(1, Math.floor(pathLength / segmentLength));
@@ -60,165 +54,182 @@ export default class Route {
                 graphics.lineBetween(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y);
             }
         } else {
-            // Рисуем сплошную линию для трактов
             this.curve.draw(graphics);
         }
     }
 
     /**
-     * Очистка и создание караванов на этом маршруте
+     * Инициализация караванов с сервера
      */
-    spawnCaravans() {
+    async initCaravansFromServer() {
         this.clearCaravans();
-        if (!this.curve) return;
 
-        // Находим данные о транспорте
-        const transport = this.scene.routesData.transportTypes.find(t => 
+        const result = await this.scene.caravanService.initCaravans(this.routeData.id);
+        if (result && result.caravans) {
+            console.log(`Инициализировано ${result.caravans.length} караванов для маршрута ${this.routeData.id}`);
+        }
+    }
+
+    /**
+     * Синхронизация караванов с сервером
+     */
+    async syncCaravans(serverCaravans) {
+        const transport = this.scene.routesData.transportTypes.find(t =>
             Number(t.id) === Number(this.routeData.transport_id)
         ) || this.scene.routesData.transportTypes[0];
 
-        // Скорость = (Базовая скорость транспорта) * (Коэффициент дороги)
-        const finalSpeed = transport.speed * (this.routeData.speedCoeff || 1.0);
-        const travelTimeMs = (this.curve.getLength() / finalSpeed) * 1000;
+        // Фильтруем караваны только для этого маршрута
+        const routeCaravans = serverCaravans.filter(c => Number(c.route_id) === Number(this.routeData.id));
+
+        // Синхронизируем каждый караван
+        for (const serverCaravan of routeCaravans) {
+            let caravanObj = this.caravans.find(c => c.serverId === serverCaravan.id);
+
+            if (!caravanObj) {
+                // Вычисляем travel_time на основе данных маршрута
+                const travelTime = this.calculateTravelTime();
+                
+                // Создаем новый караван с данными от сервера, передаём ссылку на этот Route
+                const caravanSprite = new Caravan(
+                    this.scene, 
+                    serverCaravan.x || 0, 
+                    serverCaravan.y || 0, 
+                    transport, 
+                    this.routeData,
+                    {
+                        ...serverCaravan,
+                        travel_time: travelTime
+                    },
+                    this  // Передаём ссылку на Route
+                );
+
+                caravanObj = {
+                    sprite: caravanSprite,
+                    serverId: serverCaravan.id
+                };
+
+                this.caravans.push(caravanObj);
+            } else {
+                // Обновляем существующий караван
+                caravanObj.sprite.updateFromServer(serverCaravan, false);
+            }
+        }
+
+        // Удаляем караваны, которых нет на сервере
+        const serverIds = new Set(routeCaravans.map(c => c.id));
+        const toRemove = this.caravans.filter(c => !serverIds.has(c.serverId));
+        for (const c of toRemove) {
+            if (c.sprite) c.sprite.destroy();
+        }
+        this.caravans = this.caravans.filter(c => serverIds.has(c.serverId));
+    }
+
+    /**
+     * Расчёт времени пути в мс
+     */
+    calculateTravelTime() {
+        const transport = this.scene.routesData.transportTypes.find(t =>
+            Number(t.id) === Number(this.routeData.transport_id)
+        );
+        if (!transport || !transport.speed) return 3600000; // 1 час по умолчанию
+
+        const speed = transport.speed * (this.routeData.speedCoeff || 1.0); // км/ч
+        const distance = this.getFullRouteDistance(); // пиксели (полный маршрут)
+        const distanceKm = distance * 0.1; // км
+
+        // Время в мс = (дистанция / скорость) * 3600000
+        return (distanceKm / speed) * 3600000;
+    }
+
+    /**
+     * Расчёт длины ПОЛНОГО маршрута в пикселях (from_id -> points -> to_id)
+     */
+    getFullRouteDistance() {
+        const startCity = this.scene.cities.find(c => c.cityData.id === this.routeData.from_id);
+        const endCity = this.scene.cities.find(c => c.cityData.id === this.routeData.to_id);
         
-        const unitCount = this.routeData.unitCount || 1;
-        const spacing = 1 / unitCount;
+        if (!startCity || !endCity) return 100;
 
-        for (let i = 0; i < unitCount; i++) {
-            // Передаем данные транспорта в конструктор
-            const caravanSprite = new Caravan(this.scene, 0, 0, transport, this.routeData);
+        // Собираем все точки: start -> intermediate -> end
+        const allPoints = [
+            { x: startCity.x, y: startCity.y },
+            ...(this.routeData.points || []).map(p => ({ x: p[0], y: p[1] })),
+            { x: endCity.x, y: endCity.y }
+        ];
+        
+        if (allPoints.length < 2) return 100;
 
-            const follower = { t: 0, vec: new Phaser.Math.Vector2() };
-            
-            const tween = this.scene.tweens.add({
-                targets: follower,
-                t: 1,
-                duration: travelTimeMs / window.gameSpeed,
-                repeat: -1,
-                delay: i * (spacing * (travelTimeMs / window.gameSpeed)),
-                // СРАБАТЫВАЕТ ПРИ КАЖДОМ ЗАПУСКЕ (ПЕРВАЯ ЗАГРУЗКА)
-                onStart: () => {
-                    this.transferGoods(caravanSprite);
-                },
-                // СРАБАТЫВАЕТ, КОГДА КАРАВАН ЗАКОНЧИЛ ПУТЬ И НАЧИНАЕТ СНАЧАЛА
-                onRepeat: () => {
-                    // Каждый следующий круг — разгружаем то, что привезли, и грузим новое
-                    this.transferGoods(caravanSprite);
-                },
-                onUpdate: () => {
-                    this.curve.getPointAt(follower.t, follower.vec);
-                    caravanSprite.setPosition(follower.vec.x, follower.vec.y);
+        let distance = 0;
+        for (let i = 1; i < allPoints.length; i++) {
+            const dx = allPoints[i].x - allPoints[i-1].x;
+            const dy = allPoints[i].y - allPoints[i-1].y;
+            distance += Math.sqrt(dx * dx + dy * dy);
+        }
+        return distance;
+    }
 
-                    const tangent = this.curve.getTangentAt(follower.t);
-                    const angle = Phaser.Math.RadToDeg(Math.atan2(tangent.y, tangent.x));
-                    caravanSprite.setRotationAndFlip(angle);
-                }
-            });
+    /**
+     * Расчёт длины маршрута в пикселях (только points - устарело)
+     */
+    getRouteDistance() {
+        const points = this.routeData.points || [];
+        if (points.length < 2) return 100;
 
-            this.caravans.push({ sprite: caravanSprite, tween: tween });
+        let distance = 0;
+        for (let i = 1; i < points.length; i++) {
+            const dx = points[i][0] - points[i-1][0];
+            const dy = points[i][1] - points[i-1][1];
+            distance += Math.sqrt(dx * dx + dy * dy);
+        }
+        return distance;
+    }
+
+    /**
+     * Обновление позиций всех караванов (вычисление на основе времени)
+     */
+    updateCaravans(delta) {
+        for (const caravanObj of this.caravans) {
+            caravanObj.sprite.updateByTime(delta);
         }
     }
 
-    transferGoods(caravan) {
-        const fromCity = this.scene.cities.find(c => Number(c.cityData.id) === Number(this.routeData.from_id));
-        const toCity = this.scene.cities.find(c => Number(c.cityData.id) === Number(this.routeData.to_id));
-
-        if (!fromCity || !toCity) return;
-
-        // --- 1. РАЗГРУЗКА ---
-        if (caravan.cargoAmount > 0) {
-            const cargo = caravan.unloadCargo(); // Забираем всё из ящика
-            const accepted = toCity.storage.addItems(cargo.item.id, cargo.amount);
-            
-            /*if (accepted > 0) {
-                console.log(`📦 ${toCity.cityData.name} принял ${accepted} ед. ${cargo.item.name}`);
-            }*/
-            // Если склад был полон, остаток товара просто "исчезает" или можно вернуть в караван
+    /**
+     * Обновление каравана от сервера
+     */
+    updateCaravanFromServer(serverId, serverState) {
+        const caravanObj = this.caravans.find(c => c.serverId === serverId);
+        if (caravanObj && serverState) {
+            caravanObj.sprite.updateFromServer(serverState, true);
         }
-
-        // ПОГРУЗКА
-        const selectedItem = this.getBestCargoItem(fromCity, toCity);
-        if (selectedItem) {
-            // ТЕПЕРЬ БЕРЕМ СТОЛЬКО, СКОЛЬКО ВМЕЩАЕТ ТРАНСПОРТ
-            const amountToTake = caravan.capacity; 
-            const taken = fromCity.storage.takeItems(selectedItem.id, amountToTake);
-
-            if (taken > 0) {
-                caravan.loadCargo(selectedItem, taken);
-            }
-        }
-
-        // Обновление UI...
-        this.refreshCityUI(fromCity, toCity);
     }
 
-    refreshCityUI(cityA, cityB) {
+    /**
+     * Отладка: проверка обновления
+     */
+    debugUpdate() {
+        if (this.caravans.length > 0) {
+            const c = this.caravans[0].sprite;
+            console.log(`[Route ${this.routeData.id}] Караван ${c.id}: progress=${c.progress}%, targetX=${c.targetX}, targetY=${c.targetY}`);
+        }
+    }
+
+    refreshCityUI() {
         if (this.scene.selectedCity && this.scene.viewingType === 'city') {
-            const selId = Number(this.scene.selectedCity.cityData.id);
-            if (selId === cityA.cityData.id || selId === cityB.cityData.id) {
-                this.scene.ui.updateCityInfo(this.scene.selectedCity.cityData, this.scene.routes);
-            }
+            this.scene.ui.updateCityInfo(this.scene.selectedCity.cityData, this.scene.routes);
         }
     }
 
     clearCaravans() {
         this.caravans.forEach(c => {
-            if (c.tween) c.tween.remove();
-            if (c.sprite) c.sprite.destroy();
+            if (c.sprite) {
+                c.sprite.destroy(true);
+                c.sprite = null;
+            }
         });
         this.caravans = [];
     }
 
     destroy() {
         this.clearCaravans();
-    }
-
-    getBestCargoItem(fromCity, toCity) {
-        const items = this.scene.routesData.items;
-        const economy = this.scene.routesData.cityEconomy;
-
-        // 1. Сначала смотрим, что вообще есть на складе отправителя (минимум 10 ед, чтобы не гонять пустые караваны)
-        const availableInSource = items.filter(item => fromCity.storage.getAmount(item.id) >= 50);
-        
-        if (availableInSource.length === 0) return null;
-
-        // --- ЛОГИКА ПРИОРИТЕТОВ ---
-
-        // 2. ПРИОРИТЕТ 1: Товары, в которых целевой город НУЖДАЕТСЯ (Demand)
-        // Ищем правила потребления для целевого города
-        const targetDemands = economy.filter(e => 
-            Number(e.city_id) === Number(toCity.cityData.id) && e.type === 'consumption'
-        );
-
-        const neededItems = availableInSource.filter(item => {
-            // Проверяем, есть ли этот товар в списке потребления цели
-            const isRequired = targetDemands.some(d => Number(d.item_id) === Number(item.id));
-            if (!isRequired) return false;
-
-            // Проверяем лимит: везем только если на целевом складе меньше 150 ед.
-            const amountAtTarget = toCity.storage.getAmount(item.id);
-            return amountAtTarget < 150;
-        });
-
-        if (neededItems.length > 0) {
-            // Если нашли нужные товары, выбираем случайный из них
-            return neededItems[Math.floor(Math.random() * neededItems.length)];
-        }
-
-        // 3. ПРИОРИТЕТ 2: Транзит или Экспорт (город не нуждается прямо сейчас)
-        // Везем только если на складе целевого города этого товара меньше 70 ед.
-        const transitItems = availableInSource.filter(item => {
-            const amountAtTarget = toCity.storage.getAmount(item.id);
-            return amountAtTarget < 70;
-        });
-
-        if (transitItems.length > 0) {
-            // Выбираем случайный товар для транзита/экспорта
-            return transitItems[Math.floor(Math.random() * transitItems.length)];
-        }
-
-        // 4. ИНАЧЕ: Ни одно условие не выполнено (склады цели заполнены до лимитов)
-        // Возвращаем null, караван поедет пустым
-        return null;
     }
 }

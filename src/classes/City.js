@@ -51,12 +51,15 @@ export default class City extends Phaser.GameObjects.Sprite {
     setupEvents() {
         // Эффект при наведении
         this.on('pointerover', () => {
+            // Сначала удаляем старые твины, чтобы не накапливались
+            this.scene.tweens.killTweensOf(this);
+            
             this.scene.tweens.add({
                 targets: this,
                 scale: this.scene.cityScale + 0.05,
                 duration: 200
             });
-            
+
             // Если город не выбран, добавляем легкое свечение
             if (this.scene.selectedCity !== this) {
                 this.postFX.addGlow(0x4a6fa5, 2);
@@ -66,6 +69,8 @@ export default class City extends Phaser.GameObjects.Sprite {
         // Эффект при уходе мышки
         this.on('pointerout', () => {
             if (this.scene.selectedCity !== this) {
+                this.scene.tweens.killTweensOf(this);
+                
                 this.scene.tweens.add({
                     targets: this,
                     scale: this.scene.cityScale,
@@ -86,8 +91,10 @@ export default class City extends Phaser.GameObjects.Sprite {
 
     // Метод для визуального выделения города (когда он выбран)
     setSelected(isSelected) {
-        this.postFX.clear(); // Сбрасываем старые эффекты
-        
+        // Сбрасываем все старые твины и эффекты
+        this.scene.tweens.killTweensOf(this);
+        this.postFX.clear();
+
         if (isSelected) {
             this.scene.tweens.add({
                 targets: this,

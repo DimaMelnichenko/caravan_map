@@ -258,3 +258,72 @@ select:focus {
     border-color: #dc3545;
     color: #ffb7b7;
 }
+
+/* ИНДИКАТОР СТАТУСА СОЕДИНЕНИЯ */
+.connection-status {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.85);
+    border: 2px solid #4a6fa5;
+    border-radius: 20px;
+    padding: 8px 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index: 1002;
+    font-family: 'Arial', sans-serif;
+    font-size: 14px;
+    transition: border-color 0.3s;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ffc107;
+    animation: pulse 1.5s infinite;
+}
+
+.status-text {
+    color: white;
+    white-space: nowrap;
+}
+
+/* Состояния соединения */
+.connection-status.connected {
+    border-color: #28a745;
+}
+
+.connection-status.connected .status-dot {
+    background: #28a745;
+    animation: none;
+}
+
+.connection-status.disconnected {
+    border-color: #dc3545;
+}
+
+.connection-status.disconnected .status-dot {
+    background: #dc3545;
+    animation: blink 0.5s infinite;
+}
+
+.connection-status.reconnecting {
+    border-color: #ffc107;
+}
+
+.connection-status.reconnecting .status-dot {
+    background: #ffc107;
+    animation: pulse 0.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.2); }
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}

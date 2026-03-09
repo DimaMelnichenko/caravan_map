@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:/caravan_map"
+      ],
+      "env": {
+        "ALLOWED_DIRECTORIES": "D:/caravan_map"
+      }
+    },
+    "MCP SQLite Server": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-sqlite",
+        "D:/caravan_map/world.db",
+        "list,read,write,execute"
+      ]
+    },
+    "git": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github",
+        "D:/caravan_map"
+      ]
+    },
+    "ddg-search": {
+        "command": "uvx",
+        "args": ["duckduckgo-mcp-server"]
+    }
+  },
+  "$version": 3
+}

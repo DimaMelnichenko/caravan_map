@@ -4,6 +4,8 @@ import City from '../classes/City.js';
 import Route from '../classes/Route.js';
 import UIManager from '../classes/UIManager.js';
 import DataService from '../services/DataService.js';
+import CaravanService from '../services/CaravanService.js';
+import ServerSyncService from '../services/ServerSyncService.js';
 import Border from '../classes/Border.js';
 
 
@@ -11,6 +13,8 @@ export default class MainScene extends Phaser.Scene {
     constructor() {
         super({ key: 'MainScene' });
         this.dataService = new DataService();
+        this.caravanService = new CaravanService();
+        this.serverSync = new ServerSyncService(this);
         this.caravans = [];
         this.cities = [];
         this.selectedCity = null;
@@ -25,8 +29,12 @@ export default class MainScene extends Phaser.Scene {
         this.viewingType = null;
     }
 
-    async create() { // Добавляем async перед названием метода
+    async create() {
         try {
+            // Подключаемся к серверу синхронизации
+            this.serverSync.connect();
+
+            // Загружаем начальные данные через REST API
             this.routesData = await this.dataService.loadWorld();
             this.initGame();
         } catch (err) {
@@ -178,6 +186,7 @@ export default class MainScene extends Phaser.Scene {
         window.gameScene = this;
 
         this.setupDragPanning();   // Панорамирование и создание городов
+        this.setupInputHandlers();  // Обработчики pointermove, pointerup
         this.setupRouteEditing(); // Перетаскивание точек
 
 
@@ -203,10 +212,10 @@ export default class MainScene extends Phaser.Scene {
                 
                 // Сохраняем в БД через сервис
                 const success = await this.dataService.saveRoute(this.selectedRoute);
-                
+
                 if (success) {
                     this.ui.showNotification('Торговый путь обновлен', 'success');
-                    this.refreshScene(); // Перезапуск караванов с новыми параметрами
+                    await this.refreshScene(); // Перезапуск караванов с новыми параметрами
                 }
             }
         };
@@ -239,7 +248,7 @@ export default class MainScene extends Phaser.Scene {
                     }
 
                     // 8. Визуальное обновление всей сцены (перерисовка линий и перезапуск караванов)
-                    this.refreshScene();
+                    await this.refreshScene();
 
                     // 9. Красивое уведомление
                     this.ui.showNotification('Торговый путь удален', 'success');
@@ -430,7 +439,7 @@ export default class MainScene extends Phaser.Scene {
         this.input.on('dragend', async (pointer, gameObject) => {
             if (gameObject.getData('type') === 'pathHandle') {
                 // А вот когда отпустили точку — пересоздаем караваны, чтобы они поехали по новому пути
-                this.refreshScene();
+                await this.refreshScene();
                 // И сохраняем автоматически (по желанию) или ждем нажатия кнопки Сохранить
             }
 
@@ -495,9 +504,88 @@ export default class MainScene extends Phaser.Scene {
         });
     }
 
-    createFollowers() {
-        // Просто просим каждый маршрут создать свои караваны
-        this.routes.forEach(route => route.spawnCaravans());
+    async createFollowers() {
+        // Инициализируем караваны на сервере для каждого маршрута
+        for (const route of this.routes) {
+            await route.initCaravansFromServer();
+        }
+        // Загружаем данные караванов с сервера
+        await this.syncAllCaravans();
+
+        // Подписываемся на события от сервера
+        this.setupServerSyncListeners();
+    }
+
+    /**
+     * Настройка слушателей событий сервера
+     */
+    setupServerSyncListeners() {
+        // Обработка появления каравана
+        this.serverSync.on('caravanSpawned', (data) => {
+            // Находим маршрут и создаём караван
+            const route = this.routes.find(r => r.routeData.id === data.route_id);
+            if (route) {
+                route.syncCaravans([data]);
+            }
+        });
+
+        // Обработка прибытия каравана
+        this.serverSync.on('caravanArrived', (data) => {
+            // Сбрасываем флаг returning когда караван прибыл
+            const route = this.routes.find(r => r.routeData.id === data.route_id);
+            if (route) {
+                const caravanObj = route.caravans.find(c => c.serverId === data.id);
+                if (caravanObj) {
+                    caravanObj.sprite.caravanData.returning = false;
+                }
+            }
+            this.ui.showNotification(`Караван прибыл в город!`, 'success');
+        });
+
+        // Обработка начала торговли
+        this.serverSync.on('caravanTrading', (data) => {
+            // Можно добавить визуальные эффекты
+        });
+
+        // Обработка завершения торговли - разворот каравана
+        this.serverSync.on('tradeComplete', (data) => {
+            // Находим маршрут по route_id из данных каравана
+            const route = this.routes.find(r => r.routeData.id === data.route_id);
+            
+            if (route) {
+                const caravanObj = route.caravans.find(c => c.serverId === data.id);
+                
+                if (caravanObj) {
+                    // Сбрасываем прогресс и устанавливаем флаг обратного пути
+                    caravanObj.sprite.progress = data.returning ? 100 : 0;
+                    caravanObj.sprite.caravanData.started_at = Date.now();
+                    caravanObj.sprite.caravanData.returning = !!data.returning;
+                }
+            }
+        });
+
+        // Обработка состояния соединения
+        this.serverSync.on('connected', () => {
+            this.ui.showNotification('Соединение с сервером установлено', 'success');
+        });
+
+        this.serverSync.on('disconnected', () => {
+            this.ui.showNotification('Потеряно соединение с сервером', 'error');
+        });
+
+        this.serverSync.on('reconnecting', (data) => {
+            this.ui.showNotification(`Переподключение... (попытка ${data.attempt})`, 'warning');
+        });
+    }
+
+    /**
+     * Синхронизация всех караванов с сервером
+     */
+    async syncAllCaravans() {
+        const serverCaravans = await this.caravanService.getAllCaravans();
+        for (const route of this.routes) {
+            await route.syncCaravans(serverCaravans);
+        }
     }
     
     setupCameraControls() {
@@ -531,154 +619,159 @@ export default class MainScene extends Phaser.Scene {
         });
 
         this.input.on('pointerdown', (pointer, gameObjects) => {
+            this.handlePointerDown(pointer, gameObjects);
+        });
+    }
 
-            const borderHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'borderHandle');
-            const pathHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'pathHandle');
+    async handlePointerDown(pointer, gameObjects) {
+        const borderHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'borderHandle');
+        const pathHandle = gameObjects.find(obj => obj.getData && obj.getData('type') === 'pathHandle');
 
-            const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-            const clickedObject = gameObjects.length > 0;
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        const clickedObject = gameObjects.length > 0;
 
-            // --- ЛОГИКА СРЕДНЕЙ КНОПКИ (ПАНОРАМИРОВАНИЕ) ---
-            if (pointer.middleButtonDown()) {
-                this.isDragging = true;
-                this.dragStart = {
-                    x: pointer.x, y: pointer.y,
-                    scrollX: this.cameras.main.scrollX, scrollY: this.cameras.main.scrollY
-                };
-                this.input.setDefaultCursor('grabbing');
+        // --- ЛОГИКА СРЕДНЕЙ КНОПКИ (ПАНОРАМИРОВАНИЕ) ---
+        if (pointer.middleButtonDown()) {
+            this.isDragging = true;
+            this.dragStart = {
+                x: pointer.x, y: pointer.y,
+                scrollX: this.cameras.main.scrollX, scrollY: this.cameras.main.scrollY
+            };
+            this.input.setDefaultCursor('grabbing');
+            return;
+        }
+
+        // --- РЕЖИМ ГРАНИЦ ---
+        if (this.viewingType === 'edit_borders') {
+            // 1. Если кликнули по точке - ничего не делаем, даем Phaser её тащить
+            if (borderHandle) return;
+
+            // 2. Добавление новой точки (Shift + Клик)
+            if (this.shiftKey.isDown && this.selectedBorder) {
+                this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+                this.selectedBorder.updateCurve();
+                this.selectBorder(this.selectedBorder); // Пересоздаем розовые точки
+                this.redrawBorders();
                 return;
             }
 
-            // --- РЕЖИМ ГРАНИЦ ---
-            if (this.viewingType === 'edit_borders') {
-                // 1. Если кликнули по точке - ничего не делаем, даем Phaser её тащить
-                if (borderHandle) return;
+            // 3. Выбор границы кликом по линии
+            let closestBorder = null;
+            let minDistance = 30;
 
-                // 2. Добавление новой точки (Shift + Клик)
-                if (this.shiftKey.isDown && this.selectedBorder) {
-                    this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
-                    this.selectedBorder.updateCurve();
-                    this.selectBorder(this.selectedBorder); // Пересоздаем розовые точки
-                    this.redrawBorders();
-                    return;
+            this.borders.forEach(border => {
+                if (!border.curve) return;
+                const dist = this.getDistanceToCurve(border.curve, worldPoint);
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    closestBorder = border;
                 }
+            });
 
-                // 3. Выбор границы кликом по линии
-                let closestBorder = null;
-                let minDistance = 30; 
-
-                this.borders.forEach(border => {
-                    if (!border.curve) return;
-                    const dist = this.getDistanceToCurve(border.curve, worldPoint);
-                    if (dist < minDistance) {
-                        minDistance = dist;
-                        closestBorder = border;
-                    }
-                });
-
-                if (closestBorder) {
-                    this.selectBorder(closestBorder);
-                } else if (gameObjects.length === 0) {
-                    // Кликнули в пустоту (не по handle и не по линии) - сброс
-                    this.selectedBorder = null;
-                    this.editHandles.forEach(h => h.destroy());
-                    this.editHandles = [];
-                }
-                return; // Важно: выходим из функции, чтобы не срабатывал выбор городов
+            if (closestBorder) {
+                this.selectBorder(closestBorder);
+            } else if (gameObjects.length === 0) {
+                // Кликнули в пустоту (не по handle и не по линии) - сброс
+                this.selectedBorder = null;
+                this.editHandles.forEach(h => h.destroy());
+                this.editHandles = [];
             }
+            return; // Важно: выходим из функции, чтобы не срабатывал выбор городов
+        }
 
-            // --- ЛОГИКА ЛЕВОЙ КНОПКИ ---
-            if (pointer.leftButtonDown()) {
+        // --- ЛОГИКА ЛЕВОЙ КНОПКИ ---
+        if (pointer.leftButtonDown()) {
 
-                if (this.isCreatingRoute) {
-                    // Ищем, кликнули ли мы по городу
-                    const clickedCity = gameObjects.find(obj => obj instanceof City);
-                    
-                    if (clickedCity) {
-                        const cityData = clickedCity.cityData;
+            if (this.isCreatingRoute) {
+                // Ищем, кликнули ли мы по городу
+                const clickedCity = gameObjects.find(obj => obj instanceof City);
 
-                        if (!this.firstCityForRoute) {
-                            // ШАГ 1: Выбрали первый город
-                            this.firstCityForRoute = cityData;
-                            document.getElementById('add-route-btn').innerText = `📍 Из ${cityData.name} в...`;
-                            console.log("Первая точка пути:", cityData.name);
-                        } else {
-                            // ШАГ 2: Выбрали второй город
-                            if (this.firstCityForRoute.id === cityData.id) {
-                                this.ui.showNotification("Нельзя проложить путь в тот же самый город!", 'error');
-                                return;
-                            }
-                            
-                            this.createNewRoute(this.firstCityForRoute.id, cityData.id);
-                            
-                            // Завершаем режим
-                            this.isCreatingRoute = false;
-                            this.firstCityForRoute = null;
-                            this.ghostGraphics.clear();
-                            const btn = document.getElementById('add-route-btn');
-                            btn.style.background = '#6b4e31';
-                            btn.innerText = '🗺️ Проложить путь (город -> город)';
+                if (clickedCity) {
+                    const cityData = clickedCity.cityData;
+
+                    if (!this.firstCityForRoute) {
+                        // ШАГ 1: Выбрали первый город
+                        this.firstCityForRoute = cityData;
+                        document.getElementById('add-route-btn').innerText = `📍 Из ${cityData.name} в...`;
+                        console.log("Первая точка пути:", cityData.name);
+                    } else {
+                        // ШАГ 2: Выбрали второй город
+                        if (this.firstCityForRoute.id === cityData.id) {
+                            this.ui.showNotification("Нельзя проложить путь в тот же самый город!", 'error');
+                            return;
                         }
-                        return; // Прерываем, чтобы не сработали другие клики
+
+                        await this.createNewRoute(this.firstCityForRoute.id, cityData.id);
+
+                        // Завершаем режим
+                        this.isCreatingRoute = false;
+                        this.firstCityForRoute = null;
+                        this.ghostGraphics.clear();
+                        const btn = document.getElementById('add-route-btn');
+                        btn.style.background = '#6b4e31';
+                        btn.innerText = '🗺️ Проложить путь (город -> город)';
                     }
-                }
-                
-                // 1. ПРИОРИТЕТ: Режим установки нового города
-                if (this.isPlacingCity) {
-                    this.createNewCity(worldPoint.x, worldPoint.y);
-                    this.isPlacingCity = false;
-                    const btn = document.getElementById('add-city-btn');
-                    btn.style.background = '#e67e22';
-                    btn.innerText = '🏘️ Новый город (клик на карту)';
-                    this.updatePlacementCursor();
-                    return;
-                }
-
-                // 2. ПРИОРИТЕТ: Добавление точки к существующему пути (Shift + Клик)
-                // Работает, если мы в режиме мастера И выбран какой-то путь
-                if (this.isEditorMode && this.shiftKey.isDown && this.selectedRoute) {
-                    if (!this.selectedRoute.points) this.selectedRoute.points = [];
-                    
-                    // Добавляем новую точку в массив
-                    this.selectedRoute.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
-                    
-                    // Сразу перерисовываем всё
-                    this.refreshScene(); 
-                    this.showRouteHandles(this.selectedRoute); // Обновляем синие точки
-                    return;
-                }
-
-                if (this.isEditorMode && this.shiftKey.isDown && this.selectedBorder) {
-                    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-                    this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
-                    this.selectedBorder.updateCurve();
-                    this.selectBorder(this.selectedBorder); // Пересоздаем ручки
-                    this.redrawBorders();
-                    return;
-                }
-
-                // 3. ПРИОРИТЕТ: Сброс выделения, если кликнули по пустому месту (без Shift)
-                if (this.isEditorMode && !clickedObject) {
-                    // Скрываем панели, если кликнули в "молоко"
-                    document.getElementById('editor-panel').style.display = 'none';
-                    document.getElementById('country-editor-panel').style.display = 'none';
-                    document.getElementById('route-editor-panel').style.display = 'none';
-                    
-                    // Убираем точки редактирования пути
-                    this.editHandles.forEach(h => h.destroy());
-                    this.editHandles = [];
-                    this.selectedRoute = null;
-                    this.drawAllRoutes(); // Перерисовываем, чтобы убрать подсветку
+                    return; // Прерываем, чтобы не сработали другие клики
                 }
             }
-        });
 
+            // 1. ПРИОРИТЕТ: Режим установки нового города
+            if (this.isPlacingCity) {
+                this.createNewCity(worldPoint.x, worldPoint.y);
+                this.isPlacingCity = false;
+                const btn = document.getElementById('add-city-btn');
+                btn.style.background = '#e67e22';
+                btn.innerText = '🏘️ Новый город (клик на карту)';
+                this.updatePlacementCursor();
+                return;
+            }
+
+            // 2. ПРИОРИТЕТ: Добавление точки к существующему пути (Shift + Клик)
+            // Работает, если мы в режиме мастера И выбран какой-то путь
+            if (this.isEditorMode && this.shiftKey.isDown && this.selectedRoute) {
+                if (!this.selectedRoute.points) this.selectedRoute.points = [];
+                
+                // Добавляем новую точку в массив
+                this.selectedRoute.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+
+                // Сразу перерисовываем всё
+                await this.refreshScene();
+                this.showRouteHandles(this.selectedRoute); // Обновляем синие точки
+                return;
+            }
+
+            if (this.isEditorMode && this.shiftKey.isDown && this.selectedBorder) {
+                const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+                this.selectedBorder.points.push([Math.round(worldPoint.x), Math.round(worldPoint.y)]);
+                this.selectedBorder.updateCurve();
+                this.selectBorder(this.selectedBorder); // Пересоздаем ручки
+                this.redrawBorders();
+                return;
+            }
+
+            // 3. ПРИОРИТЕТ: Сброс выделения, если кликнули по пустому месту (без Shift)
+            if (this.isEditorMode && !clickedObject) {
+                // Скрываем панели, если кликнули в "молоко"
+                document.getElementById('editor-panel').style.display = 'none';
+                document.getElementById('country-editor-panel').style.display = 'none';
+                document.getElementById('route-editor-panel').style.display = 'none';
+
+                // Убираем точки редактирования пути
+                this.editHandles.forEach(h => h.destroy());
+                this.editHandles = [];
+                this.selectedRoute = null;
+                this.drawAllRoutes(); // Перерисовываем, чтобы убрать подсветку
+            }
+        }
+    }
+
+    setupInputHandlers() {
         // Перемещение (работает, когда зажата кнопка, инициировавшая dragging)
         this.input.on('pointermove', (pointer) => {
             if (this.isDragging) {
                 const deltaX = (this.dragStart.x - pointer.x) / this.cameras.main.zoom;
                 const deltaY = (this.dragStart.y - pointer.y) / this.cameras.main.zoom;
-                
+
                 this.cameras.main.scrollX = this.dragStart.scrollX + deltaX;
                 this.cameras.main.scrollY = this.dragStart.scrollY + deltaY;
             }
@@ -808,13 +901,13 @@ export default class MainScene extends Phaser.Scene {
 
                 if (successCity && successEconomy) {
                     // Обновляем локальный кэш данных в сцене
-                    this.routesData.cityEconomy = this.routesData.cityEconomy.filter(e => e.city_id !== id);
+                    this.routesData.cityEconomy = (this.routesData.cityEconomy || []).filter(e => e.city_id !== id);
                     economyData.forEach(e => {
                         this.routesData.cityEconomy.push({ city_id: id, ...e });
                     });
 
                     this.ui.showNotification(`Данные города ${data.name} сохранены`, 'success');
-                    this.refreshMap(); 
+                    this.refreshMap();
                 }
             } catch (err) {
                 console.error("Ошибка сохранения:", err);
@@ -864,7 +957,7 @@ export default class MainScene extends Phaser.Scene {
 
                 // 6. ПОЛНОЕ ОБНОВЛЕНИЕ ВИЗУАЛА
                 this.refreshMap();   // Перерисовать города
-                this.refreshScene(); // Перерисовать пути и караваны (удалит лишние линии)
+                await this.refreshScene(); // Перерисовать пути и караваны (удалит лишние линии)
 
                 this.ui.showNotification('Город и связанные пути удалены', 'success');
             } else {
@@ -895,7 +988,7 @@ export default class MainScene extends Phaser.Scene {
         if (this.ambientSound) {
             this.ambientSound.setVolume(window.isMuted ? 0 : window.gameVolume * 0.3);
         }
-        
+
         // Обновление скорости анимаций
         if (window.gameSpeed !== this.lastGameSpeed) {
             this.caravans.forEach(caravan => {
@@ -910,13 +1003,13 @@ export default class MainScene extends Phaser.Scene {
         if (this.isCreatingRoute && this.firstCityForRoute) {
             const pointer = this.input.activePointer;
             const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-            
+
             this.ghostGraphics.clear();
             this.ghostGraphics.lineStyle(2, 0xffcc00, 0.8);
             this.ghostGraphics.lineBetween(
-                this.firstCityForRoute.x, 
-                this.firstCityForRoute.y, 
-                worldPoint.x, 
+                this.firstCityForRoute.x,
+                this.firstCityForRoute.y,
+                worldPoint.x,
                 worldPoint.y
             );
         } else if (this.ghostGraphics) {
@@ -929,9 +1022,9 @@ export default class MainScene extends Phaser.Scene {
         // БЛОК 1: ЭКОНОМИКА (каждую 1 секунду)
         this.economyTimer = (this.economyTimer || 0) + dt;
         if (this.economyTimer >= 1) {
-            this.processEconomy(); 
+            this.processEconomy();
             this.economyTimer = 0; // СБРОС ТАЙМЕРА ЭКОНОМИКИ
-            // console.log("Экономический тик (1 сек)"); 
+            // console.log("Экономический тик (1 сек)");
         }
 
         // БЛОК 2: СОХРАНЕНИЕ В БД (каждые 30 секунд)
@@ -940,6 +1033,14 @@ export default class MainScene extends Phaser.Scene {
             this.saveAllStorages(); // Вызываем новый метод
             this.saveTimer = 0;
         }
+
+        // БЛОК 3: ОБНОВЛЕНИЕ КАРАВАНОВ (вычисление на основе времени)
+        // Обновляем каждый кадр для плавности
+        this.routes.forEach(route => {
+            if (route.caravans.length > 0) {
+                route.updateCaravans(delta);
+            }
+        });
     }
 
     saveAllStorages() {
@@ -962,10 +1063,10 @@ export default class MainScene extends Phaser.Scene {
     processEconomy() {
         this.cities.forEach(city => {
             // Получаем правила именно для этого города
-            const rules = this.routesData.cityEconomy.filter(e => 
+            const rules = (this.routesData.cityEconomy || []).filter(e =>
                 Number(e.city_id) === Number(city.cityData.id)
             );
-            
+
             // Город сам управляет своим складом
             city.storage.processCycle(rules);
         });
@@ -976,12 +1077,12 @@ export default class MainScene extends Phaser.Scene {
         }
     }
 
-    refreshScene() {
+    async refreshScene() {
         // 1. Уничтожаем все старые маршруты (они сами почистят свои караваны)
         if (this.routes) {
             this.routes.forEach(r => r.destroy());
         }
-        
+
         // 2. Создаем их заново из актуальных данных
         this.routes = this.routesData.routes.map(data => new Route(this, data));
 
@@ -989,7 +1090,7 @@ export default class MainScene extends Phaser.Scene {
         this.drawAllRoutes();
 
         // 4. Запускаем караваны
-        this.createFollowers();
+        await this.createFollowers();
     }
 
     selectRouteById(id) {
@@ -1061,8 +1162,8 @@ export default class MainScene extends Phaser.Scene {
         this.ui.showCountryEditor(newCountry);
     }
 
-    createNewRoute(fromId, toId) {
-        const newId = this.routesData.routes.length > 0 
+    async createNewRoute(fromId, toId) {
+        const newId = this.routesData.routes.length > 0
             ? Math.max(...this.routesData.routes.map(r => r.id)) + 1 : 1;
 
         const newRoute = {
@@ -1076,13 +1177,13 @@ export default class MainScene extends Phaser.Scene {
         };
 
         this.routesData.routes.push(newRoute);
-        
+
         // Перерисовываем всё
-        this.refreshScene();
-        
+        await this.refreshScene();
+
         // Сразу выбираем этот путь для редактирования
         this.selectRouteById(newId);
-        
+
         // Сохраняем на сервер
         this.dataService.saveRoute(newRoute);
         
@@ -1147,8 +1248,60 @@ export default class MainScene extends Phaser.Scene {
                 .setData('type', 'borderHandle')
                 .setData('index', index)
                 .setData('borderParent', border);
-                
+
             this.editHandles.push(handle);
         });
+    }
+
+    /**
+     * Очистка при остановке сцены (предотвращает утечки памяти)
+     */
+    shutdown() {
+        // Удаляем все обработчики событий ввода
+        this.input.off('pointerdown');
+        this.input.off('pointermove');
+        this.input.off('pointerup');
+        this.input.off('drag');
+        this.input.off('dragend');
+        this.input.off('wheel');
+        this.input.off('gameout');
+
+        // Очищаем таймеры
+        if (this.ambientSound) {
+            this.ambientSound.stop();
+            this.ambientSound.destroy();
+        }
+
+        // Удаляем все маршруты и караваны
+        if (this.routes) {
+            this.routes.forEach(r => r.destroy());
+            this.routes = [];
+        }
+
+        // Удаляем все города
+        if (this.cities) {
+            this.cities.forEach(city => {
+                if (city.label) city.label.destroy();
+                if (city.destroy) city.destroy();
+            });
+            this.cities = [];
+        }
+
+        // Удаляем границы
+        if (this.editHandles) {
+            this.editHandles.forEach(h => h.destroy());
+            this.editHandles = [];
+        }
+
+        // Очищаем графику
+        if (this.routeGraphics) this.routeGraphics.destroy();
+        if (this.highlightGraphics) this.highlightGraphics.destroy();
+        if (this.ghostGraphics) this.ghostGraphics.destroy();
+        if (this.borderLayer) this.borderLayer.destroy();
+
+        // Сбрасываем ссылки
+        this.selectedCity = null;
+        this.selectedRoute = null;
+        this.selectedBorder = null;
     }
 }
